@@ -31,6 +31,13 @@ struct Oot3dNativeGameLaunch {
     std::filesystem::path UiTexturePackDirectory;
     std::filesystem::path ControlConfigPath;
     std::filesystem::path SaveDataDirectory;
+    // M1 loopback/LAN pose transport. Empty/disabled keeps the normal game.
+    bool NetplayEnabled = false;
+    bool NetplayHost = false;
+    std::string NetplayAddress = "127.0.0.1";
+    std::uint16_t NetplayPort = 27888;
+    std::int32_t NetplayPlayer = 1;
+    std::filesystem::path NetplayProbePath;
     std::filesystem::path AudioPcmDumpPath;
     std::filesystem::path A32BlockTracePath;
     std::filesystem::path PicaSemanticTracePath;

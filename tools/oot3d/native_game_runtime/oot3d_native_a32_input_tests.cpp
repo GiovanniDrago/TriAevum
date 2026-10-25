@@ -392,6 +392,7 @@ int main(int argc, char** argv) {
     std::string controlsError;
     controllerConfig.PreferredControllerGuid = "test-pad";
     controllerConfig.PreferredControllerSerial = "aa01";
+    controllerConfig.PreferredControllerPath = "/dev/input/event3";
     Require(SerializeNativeControlConfigText(
                 controllerConfig, &serializedControls, &controlsError),
             controlsError);
@@ -408,6 +409,7 @@ int main(int argc, char** argv) {
                     NativeControlProfile::Controller &&
                 parsedControls.PreferredControllerGuid == "test-pad" &&
                 parsedControls.PreferredControllerSerial == "aa01" &&
+                parsedControls.PreferredControllerPath == "/dev/input/event3" &&
                 parsedControls.GyroscopeBiasDegreesPerSecond ==
                     controllerConfig.GyroscopeBiasDegreesPerSecond,
             "native control JSON did not round-trip");
@@ -807,7 +809,7 @@ int main(int argc, char** argv) {
                     runtime.Snapshot().Config == preview &&
                     !std::filesystem::exists(controlsPath),
                 "control live preview was not isolated from persistence");
-        NativeControlDeviceDescriptor calibratedDevice{1, "gyro-pad", "Motion pad", true, true, "unit1", true};
+        NativeControlDeviceDescriptor calibratedDevice{1, "gyro-pad", "Motion pad", "", true, true, "unit1", true};
         runtime.ObserveDevices({calibratedDevice});
         runtime.BeginMotionCalibration();
         NativeControlMotionObservation observation;

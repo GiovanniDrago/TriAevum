@@ -137,6 +137,21 @@ void RequireRunnableGuest(
 
 void NativeA32WindowSession::Run() {
   Setup();
+  if (launch.NetplayEnabled) {
+    Oot3dNativeGame::NetplayOptions options;
+    options.Enabled = true;
+    options.Host = launch.NetplayHost;
+    options.Address = launch.NetplayAddress;
+    options.Port = launch.NetplayPort;
+    options.Player = static_cast<std::uint8_t>(launch.NetplayPlayer);
+    std::string netplayError;
+    if (!netplaySession.Start(options, &netplayError)) {
+      throw std::runtime_error("netplay startup failed: " + netplayError);
+    }
+    if (!launch.NetplayProbePath.empty()) {
+      netplayProbe.open(launch.NetplayProbePath, std::ios::out | std::ios::trunc);
+    }
+  }
   if (!launch.ConvertStatePath.empty()) {
     // The loaded moment, re-saved before any guest frame runs.
     const std::string *settings =
@@ -214,6 +229,7 @@ void NativeA32WindowSession::Finish() {
 
   blockTraceWriter.Write();
   picaSemanticTrace.Finish();
+  netplaySession.Stop();
 
   WriteNativeA32WindowRuntimeSummary({launch,
       controlConfigRuntime, activeTopScreenConfig, scenarioBootstrap, hdFonts,

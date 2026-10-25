@@ -322,9 +322,9 @@ int main() try {
     {
         using namespace ThreeDsRecomp::Input;
         const std::array<DeviceDescriptor, 3> devices{{
-            {7, "pad", "Same model", false, false, "AA:01"},
-            {3, "pad", "Same model", false, false, "AA:02"},
-            {1, "virtual", "Steam Input", false, false, ""},
+            {7, "pad", "Same model", "/dev/input/event7", false, false, "AA:01"},
+            {3, "pad", "Same model", "/dev/input/event3", false, false, "AA:02"},
+            {1, "virtual", "Steam Input", "/dev/input/event1", false, false, ""},
         }};
         Require(SelectControllerDevice(devices, "", "") == 1,
                 "automatic selection must be independent of enumeration order");
@@ -335,6 +335,17 @@ int main() try {
                 "legacy GUID preference is not deterministic and sticky");
         Require(SelectControllerDevice(devices, "pad", "aa-01", 3) == 7,
                 "serial preference ignored or not normalized");
+        Require(SelectControllerDevice(devices, "", "", -1,
+                                       "/dev/input/event3") == 3,
+                "explicit path did not select the other identical pad");
+        Require(SelectControllerDevice(devices, "", "", -1,
+                                       "/dev/input/event99") == -1,
+                "missing explicit path silently routed another pad");
+        Require(SelectControllerDevice(devices, "pad", "", 7,
+                                       "/dev/input/event7") == 7 &&
+                SelectControllerDevice(devices, "missing", "", 7,
+                                       "/dev/input/event3") == 3,
+                "path identity was overridden by stale GUID serial state");
         Require(SelectControllerDevice(devices, "pad", "missing", 7) == -1 &&
                 SelectControllerDevice(devices, "missing", "", 7) == -1,
                 "explicit missing preference silently routes another controller");

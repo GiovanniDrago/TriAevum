@@ -325,6 +325,10 @@ struct DeviceDescriptor {
     std::int32_t InstanceId = -1;
     std::string Guid;
     std::string Name;
+    // SDL's stable device path when available (for example
+    // /dev/input/eventN or a platform device path). This distinguishes two
+    // identical pads that expose no serial number.
+    std::string Path;
     bool HasGyroscope = false;
     bool HasAccelerometer = false;
     std::string Serial;
@@ -333,13 +337,17 @@ struct DeviceDescriptor {
 };
 
 // Session IDs are never persisted. A GUID identifies a model; a serial, when
-// available, distinguishes two physical pads of that model.
+// available, distinguishes two physical pads of that model. A path is the
+// fallback for identical pads without a serial.
 [[nodiscard]] std::string NormalizeControllerSerial(std::string_view serial);
 [[nodiscard]] bool MatchesController(const DeviceDescriptor& device,
     std::string_view guid, std::string_view serial);
+[[nodiscard]] bool MatchesControllerPath(const DeviceDescriptor& device,
+    std::string_view path);
 [[nodiscard]] std::int32_t SelectControllerDevice(
     std::span<const DeviceDescriptor> devices, std::string_view guid,
-    std::string_view serial, std::int32_t previousInstance = -1);
+    std::string_view serial, std::int32_t previousInstance = -1,
+    std::string_view path = {});
 
 struct MotionObservation {
     std::array<float, 3> GyroscopeDegreesPerSecond{};

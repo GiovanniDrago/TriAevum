@@ -18,7 +18,8 @@ struct SdlControllerSelection {
 
 inline SdlControllerSelection ResolveSdlController(
     const std::unordered_map<std::int32_t, SDL_GameController*>& connected,
-    std::string_view guid, std::string_view serial, std::int32_t previousInstance) {
+    std::string_view guid, std::string_view serial, std::int32_t previousInstance,
+    std::string_view path = {}) {
     SdlControllerSelection result;
     for (const auto& [id, controller] : connected) {
         if (!controller || SDL_GameControllerGetAttached(controller) != SDL_TRUE) continue;
@@ -30,6 +31,13 @@ inline SdlControllerSelection ResolveSdlController(
         device.Guid = text;
         const char* name = SDL_GameControllerName(controller);
         device.Name = name ? name : text;
+#if SDL_VERSION_ATLEAST(2, 24, 0)
+        if (const char* devicePath = SDL_JoystickPath(
+                SDL_GameControllerGetJoystick(controller));
+            devicePath != nullptr) {
+            device.Path = devicePath;
+        }
+#endif
 #if SDL_VERSION_ATLEAST(2, 0, 14)
         const char* deviceSerial = SDL_GameControllerGetSerial(controller);
         if (deviceSerial) device.Serial = NormalizeControllerSerial(deviceSerial);
@@ -42,7 +50,8 @@ inline SdlControllerSelection ResolveSdlController(
     std::sort(result.Devices.begin(), result.Devices.end(), [](const auto& a, const auto& b) {
         return a.InstanceId < b.InstanceId;
     });
-    result.InstanceId = SelectControllerDevice(result.Devices, guid, serial, previousInstance);
+    result.InstanceId = SelectControllerDevice(result.Devices, guid, serial,
+                                               previousInstance, path);
     for (auto& device : result.Devices) device.Selected = device.InstanceId == result.InstanceId;
     if (result.InstanceId >= 0) result.Controller = connected.at(result.InstanceId);
     return result;

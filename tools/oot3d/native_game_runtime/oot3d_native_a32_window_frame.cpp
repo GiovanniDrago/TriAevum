@@ -1,5 +1,7 @@
 // Native A32 window session: one frame of the loop and the renderer-side work it schedules.
 #include "oot3d_native_a32_window_session.h"
+
+#include <imgui.h>
 #include "fast/renderer3ds/pica_surface_debug.h"
 #include "oot3d/renderer/ui_presentation_layout.h"
 #include "oot3d_native_room_shadow_shell.h"
@@ -599,6 +601,108 @@ bool NativeA32WindowSession::RunFrame() {
   phaseStart = std::chrono::steady_clock::now();
   CpuProbe::Scope cpuPresent(CpuProbe::Phase::Present);
   Fast::Renderer3ds::SlowStepTrace presentSteps("present");
+  if (netplaySession.Enabled()) {
+    Oot3dNativeGame::NetplayPose local;
+    const std::uint32_t actor = playerTimingProbe.Stats().LastPlayerAddress;
+    if (actor != 0U) {
+      std::uint32_t bits[3]{};
+      std::uint16_t yaw = 0;
+      if (process.Memory().Read32(actor + 0x28U, &bits[0]) &&
+          process.Memory().Read32(actor + 0x2CU, &bits[1]) &&
+          process.Memory().Read32(actor + 0x30U, &bits[2]) &&
+          process.Memory().Read16(actor + 0xBEU, &yaw)) {
+        for (size_t axis = 0; axis < 3U; ++axis)
+          local.Position[axis] = std::bit_cast<float>(bits[axis]);
+        local.Yaw = static_cast<float>(static_cast<std::int16_t>(yaw)) *
+                    (3.14159265358979323846F / 32768.0F);
+      }
+    }
+    netplaySession.Poll(1.0 / 60.0, local);
+    Oot3dNativeGame::NetplayPose remote;
+    if (netplaySession.LatestRemotePose(&remote)) {
+      netplayRemotePose = remote;
+      static auto lastLog = std::chrono::steady_clock::time_point{};
+      const auto now = std::chrono::steady_clock::now();
+      if (now - lastLog >= std::chrono::seconds(1)) {
+        lastLog = now;
+        std::fprintf(stderr,
+                     "TRIAEVUM_NETPLAY connected=%d local=%u remote=(%.2f,%.2f,%.2f) "
+                     "yaw=%.2f seq=%u\n",
+                     netplaySession.Connected() ? 1 : 0,
+                     static_cast<unsigned>(netplaySession.LocalPlayer()),
+                     remote.Position[0], remote.Position[1], remote.Position[2],
+                     remote.Yaw, remote.Sequence);
+        if (netplayProbe.is_open()) {
+          netplayProbe << "{\"schema\":\"triaevum.netplay.probe.v1\","
+                          "\"host_frame\":" << frameCount
+                       << ",\"local_player\":" << static_cast<unsigned>(
+                              netplaySession.LocalPlayer())
+                       << ",\"connected\":" << (netplaySession.Connected() ? "true" : "false")
+                       << ",\"remote_pos\":[" << remote.Position[0] << ","
+                       << remote.Position[1] << "," << remote.Position[2] << "]"
+                       << ",\"remote_yaw\":" << remote.Yaw
+                       << ",\"remote_sequence\":" << remote.Sequence
+                       << "}\n";
+          netplayProbe.flush();
+        }
+        // M2 remote-player proxy: project the synchronized remote position into
+        // the local presented view and draw a clearly labeled marker. The
+        // full second Link model/pose renderer is a later engine-level step.
+        const auto snapshot = sceneViewProbe.Capture(process.Memory());
+        if (snapshot.has_value() && snapshot->CameraAvailable) {
+          const auto sub = [](const std::array<float, 3>& a,
+                              const std::array<float, 3>& b) {
+            return std::array<float, 3>{a[0] - b[0], a[1] - b[1], a[2] - b[2]};
+          };
+          const auto dot = [](const std::array<float, 3>& a,
+                              const std::array<float, 3>& b) {
+            return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+          };
+          const auto cross = [](const std::array<float, 3>& a,
+                                const std::array<float, 3>& b) {
+            return std::array<float, 3>{a[1] * b[2] - a[2] * b[1],
+                                        a[2] * b[0] - a[0] * b[2],
+                                        a[0] * b[1] - a[1] * b[0]};
+          };
+          auto forward = sub(snapshot->At, snapshot->Eye);
+          const float forwardLength = std::sqrt(dot(forward, forward));
+          if (forwardLength > 1e-5F) {
+            for (auto& v : forward) v /= forwardLength;
+            const std::array<float, 3> worldUp{0.0F, 1.0F, 0.0F};
+            auto right = cross(forward, worldUp);
+            const float rightLength = std::sqrt(dot(right, right));
+            if (rightLength > 1e-5F) {
+              for (auto& v : right) v /= rightLength;
+              const auto up = cross(right, forward);
+              const auto rel = sub(remote.Position, snapshot->Eye);
+              const float z = dot(rel, forward);
+              const float tanX = (snapshot->Right - snapshot->Left) /
+                                 (2.0F * std::max(1e-5F, snapshot->NearPlane));
+              const float tanY = (snapshot->Top - snapshot->Bottom) /
+                                 (2.0F * std::max(1e-5F, snapshot->NearPlane));
+              if (z > snapshot->NearPlane && tanX > 1e-5F && tanY > 1e-5F) {
+                const float ndcX = dot(rel, right) / (z * tanX);
+                const float ndcY = dot(rel, up) / (z * tanY);
+                if (std::isfinite(ndcX) && std::isfinite(ndcY) &&
+                    std::abs(ndcX) <= 1.5F && std::abs(ndcY) <= 1.5F) {
+                  const float width = static_cast<float>(window.GetWidth());
+                  const float height = static_cast<float>(window.GetHeight());
+                  const ImVec2 screen{(ndcX * 0.5F + 0.5F) * width,
+                                      (1.0F - (ndcY * 0.5F + 0.5F)) * height};
+                  auto* draw = ImGui::GetForegroundDrawList();
+                  draw->AddCircleFilled(screen, 10.0F, IM_COL32(40, 230, 120, 230));
+                  draw->AddCircle(screen, 12.0F, IM_COL32(0, 0, 0, 230), 16, 2.0F);
+                  draw->AddText(ImVec2(screen.x + 14.0F, screen.y - 8.0F),
+                                IM_COL32(40, 230, 120, 255),
+                                netplaySession.LocalPlayer() == 1U ? "P2" : "P1");
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
   // The first frames render under the preparation screen.
   preparationScreen.Draw(preparationStatus);
   gui->EndDraw();

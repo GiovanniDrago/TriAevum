@@ -157,9 +157,10 @@ bool DecodeNativeControlConfig(const nlohmann::json& document,
     SetError(error, "native control config root/output is invalid");
     return false;
   }
-  constexpr std::array<std::string_view, 12> kAllowedFields{
+  constexpr std::array<std::string_view, 13> kAllowedFields{
       "schema", "profile", "devices", "bindings", "analog", "aim",
-      "free_camera", "controller_guid", "controller_serial", "calibration", "capture_mouse", "controller_touchpad"};
+      "free_camera", "controller_guid", "controller_serial", "controller_path",
+      "calibration", "capture_mouse", "controller_touchpad"};
   const std::set<std::string_view> allowed(kAllowedFields.begin(),
                                            kAllowedFields.end());
   for (const auto& [key, value] : document.items()) {
@@ -235,6 +236,15 @@ bool DecodeNativeControlConfig(const nlohmann::json& document,
     }
     parsed.PreferredControllerSerial = ThreeDsRecomp::Input::NormalizeControllerSerial(
         document.at("controller_serial").get<std::string>());
+  }
+
+  if (document.contains("controller_path")) {
+    if (!document.at("controller_path").is_string()) {
+      SetError(error, "controller_path must be a string");
+      return false;
+    }
+    parsed.PreferredControllerPath =
+        document.at("controller_path").get<std::string>();
   }
 
   if (document.contains("controller_touchpad")) {
@@ -672,6 +682,7 @@ bool SerializeNativeControlConfigText(const NativeControlConfig& config,
       {"capture_mouse", config.CaptureMouseInGameplay},
       {"controller_guid", config.PreferredControllerGuid},
       {"controller_serial", config.PreferredControllerSerial},
+      {"controller_path", config.PreferredControllerPath},
       {"controller_touchpad", {{"enabled", config.ControllerTouchpadEnabled}, {"index", config.ControllerTouchpadIndex}}},
       {"bindings", std::move(bindings)},
       {"analog",

@@ -13,6 +13,7 @@ add_library(oot3d_native_game_runtime STATIC EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_native_player_temporal_bridge.cpp
     tools/oot3d/native_game_runtime/oot3d_native_root_motion.cpp
     tools/oot3d/native_game_runtime/oot3d_native_skel_anime.cpp
+    tools/oot3d/native_game_runtime/oot3d_netplay.cpp
 )
 target_include_directories(oot3d_native_game_runtime PUBLIC
     tools/oot3d/decomp_support/include
@@ -164,6 +165,28 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Windows")
 endif()
 set_property(TARGET oot3d_native_game_launch_profile_tests PROPERTY
     FOLDER Tests)
+
+# Two-instance launcher: mode, controller selection and per-player data roots.
+# It owns the child processes; the game remains a normal executable.
+add_executable(triaevum_launcher
+    tools/netplay/triaevum_launcher.cpp)
+target_link_libraries(triaevum_launcher PRIVATE
+    nlohmann_json::nlohmann_json)
+if (TARGET SDL2::SDL2)
+    target_link_libraries(triaevum_launcher PRIVATE SDL2::SDL2)
+else()
+    message(FATAL_ERROR "triaevum_launcher requires SDL2::SDL2")
+endif()
+target_compile_options(triaevum_launcher PRIVATE "${WARNING_OVERRIDE}")
+oot3d_target_defaults(triaevum_launcher FOLDER Tools)
+
+add_executable(oot3d_netplay_tests EXCLUDE_FROM_ALL
+    tools/oot3d/native_game_runtime/oot3d_netplay.cpp
+    tools/oot3d/native_game_runtime/oot3d_netplay_tests.cpp)
+target_include_directories(oot3d_netplay_tests PRIVATE
+    tools/oot3d/native_game_runtime)
+target_compile_options(oot3d_netplay_tests PRIVATE "${WARNING_OVERRIDE}")
+oot3d_target_defaults(oot3d_netplay_tests FOLDER Tests)
 
 add_executable(oot3d_graphics_settings_schedule_tests EXCLUDE_FROM_ALL
     tools/oot3d/native_game_runtime/oot3d_graphics_settings_schedule.cpp

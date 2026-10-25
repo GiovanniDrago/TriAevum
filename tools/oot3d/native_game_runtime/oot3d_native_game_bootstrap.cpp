@@ -106,6 +106,8 @@ void PrintOot3dNativeGameUsage() {
                  "[--max-seconds <seconds>] "
                  "[--fixed-delta-seconds <seconds>] "
                  "[--input-timeline <timeline.json>] "
+                 "[--netplay-host <port>|--netplay-connect <host:port>] "
+                 "[--netplay-player <1|2>] [--netplay-probe <jsonl>] "
                  "[--graphics-settings-schedule <schedule.json>] [--width "
                  "<pixels>] [--height <pixels>]\n";
 }
@@ -348,6 +350,32 @@ bool ParseOot3dNativeGameArgs(int argc, char** argv, Oot3dNativeGameLaunch& laun
             }
         } else if (arg == "--input-timeline" && index + 1 < argc) {
             launch.Host.InputTimelinePath = argv[++index];
+        } else if (arg == "--netplay-host" && index + 1 < argc) {
+            launch.NetplayEnabled = true;
+            launch.NetplayHost = true;
+            launch.NetplayPort = static_cast<std::uint16_t>(
+                ParseU32(argv[++index], "netplay port"));
+        } else if (arg == "--netplay-connect" && index + 1 < argc) {
+            const std::string endpoint = argv[++index];
+            const auto colon = endpoint.rfind(':');
+            if (colon == std::string::npos || colon == 0U ||
+                colon + 1U >= endpoint.size()) {
+                throw std::runtime_error(
+                    "--netplay-connect requires HOST:PORT");
+            }
+            launch.NetplayEnabled = true;
+            launch.NetplayHost = false;
+            launch.NetplayAddress = endpoint.substr(0, colon);
+            launch.NetplayPort = static_cast<std::uint16_t>(
+                ParseU32(endpoint.substr(colon + 1U), "netplay port"));
+        } else if (arg == "--netplay-player" && index + 1 < argc) {
+            launch.NetplayPlayer = static_cast<std::int32_t>(
+                ParseU32(argv[++index], "netplay player"));
+            if (launch.NetplayPlayer < 1 || launch.NetplayPlayer > 2) {
+                throw std::runtime_error("--netplay-player must be 1 or 2");
+            }
+        } else if (arg == "--netplay-probe" && index + 1 < argc) {
+            launch.NetplayProbePath = argv[++index];
         } else if (arg == "--graphics-settings-schedule" && index + 1 < argc) {
             launch.Host.GraphicsSettingsSchedulePath = argv[++index];
         } else if (arg == "--width" && index + 1 < argc) {

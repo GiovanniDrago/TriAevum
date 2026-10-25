@@ -43,8 +43,22 @@ bool MatchesController(const DeviceDescriptor& device, std::string_view guid,
          NormalizeControllerSerial(serial) == NormalizeControllerSerial(device.Serial)));
 }
 
+bool MatchesControllerPath(const DeviceDescriptor& device,
+                           std::string_view path) {
+    return !path.empty() && device.Path == path;
+}
+
 std::int32_t SelectControllerDevice(std::span<const DeviceDescriptor> devices,
-    std::string_view guid, std::string_view serial, std::int32_t previousInstance) {
+    std::string_view guid, std::string_view serial, std::int32_t previousInstance,
+    std::string_view path) {
+    // An explicit path is an identity, not a preference. If that device is not
+    // present, fail closed instead of silently binding another identical pad.
+    if (!path.empty()) {
+        for (const auto& device : devices)
+            if (device.InstanceId >= 0 && MatchesControllerPath(device, path))
+                return device.InstanceId;
+        return -1;
+    }
     std::int32_t selected = -1;
     for (const auto& device : devices) {
         if (device.InstanceId < 0 || !MatchesController(device, guid, serial)) continue;

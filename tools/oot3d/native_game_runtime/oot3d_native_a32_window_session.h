@@ -60,6 +60,7 @@
 #include "oot3d_native_pica_vulkan_bridge.h"
 #include "oot3d_native_pica_vulkan_plan.h"
 #include "oot3d_native_player_temporal_bridge.h"
+#include "oot3d_netplay.h"
 #include "oot3d_native_scenario_bootstrap.h"
 #include "oot3d_native_temporal_event_ledger.h"
 #include "oot3d_native_true_aot_blocks.h"
@@ -117,6 +118,7 @@
 #include <cmath>
 #include <cstdint>
 #include <deque>
+#include <fstream>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -399,6 +401,9 @@ private:
   std::optional<Oot3dNativeGame::NativeFrameRatePolicy> frameRatePolicyStorage;
   Oot3dNativeGame::NativeA32SceneViewProbe sceneViewProbe;
   Oot3dNativeGame::NativeA32PlayerTimingProbe playerTimingProbe;
+  Oot3dNativeGame::NetplaySession netplaySession;
+  std::optional<Oot3dNativeGame::NetplayPose> netplayRemotePose;
+  std::ofstream netplayProbe;
   Oot3dNativeGame::NativeTemporalEventLedger temporalEventLedger;
   Oot3dNativeGame::NativeA32PlayerTemporalBridge playerTemporalBridge;
   NativeWidescreenProjectionState widescreenProjection;

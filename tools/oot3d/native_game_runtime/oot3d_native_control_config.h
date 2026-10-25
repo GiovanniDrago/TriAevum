@@ -79,6 +79,9 @@ struct NativeControlConfig {
   bool NativeAimInvertY = false;
   std::string PreferredControllerGuid;
   std::string PreferredControllerSerial;
+  // Exact device path for identical pads without a serial (for example the
+  // SDL joystick path). Empty keeps the GUID/serial selection.
+  std::string PreferredControllerPath;
   bool ControllerTouchpadEnabled = true;
   std::int32_t ControllerTouchpadIndex = 0;
   std::string CalibrationControllerGuid;

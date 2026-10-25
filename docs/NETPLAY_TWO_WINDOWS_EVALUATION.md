@@ -1,6 +1,6 @@
 # Two-Window Netplay Evaluation
 
-**Status**: evaluation and spike plan; no netplay implementation yet.
+**Status**: M0 launcher, M1 loopback pose transport, and M2 remote-player proxy implemented on `netplay-eval`. Full remote Link model/world sync is still pending.
 
 ## Goal
 
@@ -281,6 +281,64 @@ Verified in this evaluation:
 No additional MCP (REA or a reverse-engineering server) is required for the
 two-window/network evaluation.
 
+
+## Implemented M0-M2
+
+### M0 - launcher and isolation
+
+`tools/netplay/triaevum_launcher.cpp` builds as `triaevum_launcher`. It:
+
+- lists physical SDL gamepads and hides Steam virtual mirrors by default;
+- requires two distinct pads for multiplayer;
+- writes a per-instance `oot3d_controls.json` with `controller_path`, GUID
+  and serial, and disables keyboard/mouse for the multiplayer mode;
+- copies the selected save seed into two private save roots;
+- writes per-instance game/controls configs and output/log paths;
+- gives each instance its own renderer cache, optionally seeded through
+  `--cache-source`;
+- waits for the first instance's `TopScreen source-port layout` marker before
+  starting the second, instead of launching both cold;
+- owns child PIDs and stops only its own processes;
+- supports `--dry-run` planning, `--no-save-copy`, `--duration`, `--netplay-port`
+  and `--netplay-connect-address`.
+
+A two-pad path audit is included: the two connected Zikway pads have identical
+GUIDs and no serial, so `controller_path` is mandatory for correct pinning.
+
+### M1 - loopback/LAN pose transport
+
+`oot3d_netplay.h/.cpp` adds a minimal UDP host/client session:
+
+- `--netplay-host <port>` / `--netplay-connect host:port`;
+- `--netplay-player 1|2`;
+- Hello/HelloAck/State/Bye packets, 30 Hz pose snapshots, heartbeat timeout;
+- local Link position/yaw read from the validated Player actor;
+- optional `--netplay-probe` JSONL with connection and remote pose.
+
+The launcher wires p1 as host and p2 as client on `127.0.0.1:27888` by default.
+Two real instances connected in the spike and both wrote netplay probes with
+`connected=true` and remote poses.
+
+### M2 - remote-player proxy
+
+The local process projects the synchronized remote position through the scene
+camera and draws a labeled P2/P1 marker over the presented frame. The projection
+is a pure function with tests. This is a **proxy**, not the final second Link
+model: spawning/animating a second full Link without becoming a second `Player`
+is still the next engine-level task.
+
+### Verification
+
+- `oot3d_netplay_tests`: protocol loopback, pose round-trip, center/offscreen/
+  behind-camera projection.
+- LLVM coverage for `oot3d_netplay.cpp`: 90.04% lines, 92.31% functions,
+  88.48% regions.
+- `oot3d_native_a32_input_tests`: controller path/GUID/serial round-trip and
+  legacy config compatibility.
+- `three_ds_sdl_controller_tests`: SDL selection and device behavior.
+- Two real instances connected over loopback and exchanged poses; cold-start
+  shader preparation remains the main launcher timing issue, handled by the
+  readiness wait and warm-cache source.
 
 ## First spike result
 

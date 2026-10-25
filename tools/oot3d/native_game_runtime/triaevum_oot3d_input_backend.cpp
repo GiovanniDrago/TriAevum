@@ -33,7 +33,8 @@ SelectController(const NativeControlConfig &config, std::int32_t previousInstanc
   }
   return ThreeDsRecomp::Input::ResolveSdlController(
       devices->GetConnectedSDLGamepadsForPort(0), config.PreferredControllerGuid,
-      config.PreferredControllerSerial, previousInstance);
+      config.PreferredControllerSerial, previousInstance,
+      config.PreferredControllerPath);
 }
 
 class WindowButtonSource final : public ThreeDsRecomp::Input::HostButtonSource {

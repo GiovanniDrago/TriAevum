@@ -37,7 +37,8 @@ PollNativeA32Input(Fast::Fast3dWindow &window,
     if (devices != nullptr) {
       selectedController = ThreeDsRecomp::Input::ResolveSdlController(
           devices->GetConnectedSDLGamepadsForPort(0), config.PreferredControllerGuid,
-          config.PreferredControllerSerial, pollingState.ControllerInstance);
+          config.PreferredControllerSerial, pollingState.ControllerInstance,
+          config.PreferredControllerPath);
     }
   }
   if (pollingState.ControllerInstance != selectedController.InstanceId) {
