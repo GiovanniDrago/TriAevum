@@ -33,6 +33,12 @@ bool TraceEnabled() {
   return enabled;
 }
 
+bool SceneTransitionEnabled() {
+  static const bool enabled =
+      std::getenv("TRIAEVUM_NETPLAY_SCENE_TRANSITION") != nullptr;
+  return enabled;
+}
+
 bool ReadPlayState(NativeA32Process& process, std::uint32_t* play,
                    std::uint16_t* scene, std::uint8_t* room) {
   auto& memory = process.Memory();
@@ -98,6 +104,11 @@ void NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
     }
     return;
   }
+
+  // Automatic scene transitions are fail-closed until the native transition
+  // path is validated with a live second Player actor. The guarded code is
+  // retained for controlled debugging only.
+  if (!SceneTransitionEnabled()) return;
 
   // A transition request during scene load/name-entry can accept entrance 0
   // and leave the guest in a half-built scene. Wait until the local scene has

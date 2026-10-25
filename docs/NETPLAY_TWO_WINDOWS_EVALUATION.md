@@ -1,6 +1,6 @@
 # Two-Window Netplay Evaluation
 
-**Status**: M0 launcher, M1 loopback pose transport, M2 remote-player proxy and M2.5 guest-owned remote Link are usable. M3.1 synchronizes scene/room identity, entrance, clock, health, wallet, 64 switch flags and 64 collectible flags. Full door/chest actor animation, enemies, items and cutscenes remain pending.
+**Status**: M0 launcher, M1 loopback pose transport, M2 remote-player proxy and M2.5 guest-owned remote Link are usable. M3.1 synchronizes scene/room identity, clock, health, wallet, 64 switch flags and 64 collectible flags. Automatic scene transitions are disabled after a reproduced fault; full door/chest actor animation, enemies, items and cutscenes remain pending.
 
 ## Goal
 
@@ -366,11 +366,13 @@ switches from `PlayState +0x2228/+0x222C` and queries the title's
 never writes the host save.
 
 Flags are applied only when scene and room match; a remote peer in another
-room must transition first rather than inheriting that room's switches. The
-client requests the host entrance through the title's transition helper only
-after the local scene has been stable for two seconds and the entrance is
-non-zero. This guard prevents the name-entry/loading scene from accepting
-entrance 0 and leaving a half-built scene.
+room must transition first rather than inheriting that room's switches.
+
+Automatic scene transitions are **disabled by default**. A real two-instance
+run requested entrance 187 and then faulted at `pc=0x00371788` while the remote
+Player actor existed. The guarded request code remains behind
+`TRIAEVUM_NETPLAY_SCENE_TRANSITION=1` for debugging only; do not treat it as a
+supported path until the remote actor teardown is fixed.
 
 This is not full world replication: existing door/chest actors may not animate
 immediately, enemies/items/cutscenes are still local-only, room changes without
@@ -397,6 +399,10 @@ bits are carried.
   shows `local_room=0`, `switches=0x...5`, `collectibles=0x...3`, a clean exit
   and no process fault. Host collectible queries are in
   `/tmp/opencode/netplay-world-host/run.log`.
+- Real two-instance check: `/tmp/opencode/netplay-real/p2/run.log` requested
+  entrance 187 and faulted at `pc=0x00371788`; automatic transitions are now
+  fail-closed. The remote actor and flag path were not blamed for this fault;
+  the teardown/transition ordering is the blocker.
 - `title_to_existing_save.json` now selects the occupied save slot with
   `circle_y` before the A press; without it the run stops at name entry.
 
