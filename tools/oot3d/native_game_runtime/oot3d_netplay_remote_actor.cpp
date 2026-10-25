@@ -300,6 +300,16 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
                  static_cast<std::uint16_t>(yaw));
 }
 
+void NetplayRemoteActor::PrepareSceneTransition(NativeA32Process& process) {
+  const std::uint32_t actor = mActor != 0U ? mActor : mPending;
+  if (actor != 0U) {
+    auto& memory = process.Memory();
+    memory.Write32(actor + kActorUpdate, kActorNoop);
+    memory.Write32(actor + kActorDraw, 0U);
+  }
+  Abandon(process);
+}
+
 void NetplayRemoteActor::Abandon(NativeA32Process& process) {
   const std::uint32_t actor = mActor != 0U ? mActor : mPending;
   mActor = 0;

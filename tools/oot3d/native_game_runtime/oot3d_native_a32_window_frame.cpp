@@ -1406,10 +1406,15 @@ void NativeA32WindowSession::RunGuestRefresh() {
   } else {
     netplayRemoteActor.SetRemotePose(nullptr);
   }
-  netplayRemoteActor.BeforeGuest(process);
-  netplayWorldSync.BeforeGuest(
+  const bool netplaySceneTransition = netplayWorldSync.BeforeGuest(
       process, netplaySession.Options().Host,
       netplayRemotePose.has_value() ? &*netplayRemotePose : nullptr);
+  if (netplaySceneTransition) {
+    netplayRemoteActor.PrepareSceneTransition(process);
+    netplayWorldSync.CommitPendingTransition(process);
+  } else {
+    netplayRemoteActor.BeforeGuest(process);
+  }
   sceneViewProbe.BeginGuestRefresh();
   phaseStart = std::chrono::steady_clock::now();
   processResult =

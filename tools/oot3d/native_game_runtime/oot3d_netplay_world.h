@@ -17,8 +17,9 @@ class NativeA32Process;
 // bit, so a chest that was opened on the host stays open on the client.
 class NetplayWorldSync final {
 public:
-  void BeforeGuest(NativeA32Process& process, bool host,
-                   const NetplayPose* remote);
+  [[nodiscard]] bool BeforeGuest(NativeA32Process& process, bool host,
+                                 const NetplayPose* remote);
+  bool CommitPendingTransition(NativeA32Process& process);
   void FillLocalPose(NativeA32Process& process, NetplayPose* local) const;
   void Reset();
 
@@ -38,6 +39,7 @@ private:
   std::uint32_t mTransitionCooldown = 0;
   std::uint16_t mLastScene = 0;
   std::uint32_t mPlay = 0;
+  std::int32_t mPendingEntrance = 0;
 };
 
 } // namespace Oot3dNativeGame

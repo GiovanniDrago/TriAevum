@@ -73,12 +73,12 @@ void NetplayWorldSync::Reset() {
   mPlay = 0;
 }
 
-void NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
+bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
                                    const NetplayPose* remote) {
   std::uint32_t play = 0U;
   std::uint16_t scene = 0U;
   std::uint8_t room = 0U;
-  if (!ReadPlayState(process, &play, &scene, &room)) return;
+  if (!ReadPlayState(process, &play, &scene, &room)) return false;
   if (play != mPlay || scene != mLastScene) {
     mPlay = play;
     mLastScene = scene;
@@ -93,38 +93,50 @@ void NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
   if (host) {
     if (mFrame % kCollectibleQueryInterval == 1U)
       QueryCollectibleFlags(process, play);
-    return;
+    return false;
   }
 
-  if (remote == nullptr || remote->SceneId == 0U) return;
+  if (remote == nullptr || remote->SceneId == 0U) return false;
   if (remote->SceneId == scene) {
     if (remote->RoomId == room) {
       ApplySwitchFlags(process, play, remote->SwitchFlags);
       ApplyCollectibleFlags(process, play, remote->CollectibleFlags);
     }
-    return;
+    return false;
   }
 
   // Automatic scene transitions are fail-closed until the native transition
   // path is validated with a live second Player actor. The guarded code is
   // retained for controlled debugging only.
-  if (!SceneTransitionEnabled()) return;
+  if (!SceneTransitionEnabled()) return false;
 
   // A transition request during scene load/name-entry can accept entrance 0
   // and leave the guest in a half-built scene. Wait until the local scene has
   // been stable for two seconds and require a real entrance.
-  if (mSceneFrames < 120U) return;
+  if (mSceneFrames < 120U) return false;
   if (mTransitionCooldown != 0U) {
     --mTransitionCooldown;
-    return;
+    return false;
   }
-  if (remote->EntranceId <= 0 || remote->EntranceId > 0xFFFF) return;
-  if (RequestTransition(process, play,
-                        static_cast<std::uint16_t>(remote->EntranceId))) {
+  if (remote->EntranceId <= 0 || remote->EntranceId > 0xFFFF) return false;
+  mPendingEntrance = remote->EntranceId;
+  return true;
+}
+
+bool NetplayWorldSync::CommitPendingTransition(NativeA32Process& process) {
+  const std::int32_t entrance = mPendingEntrance;
+  mPendingEntrance = 0;
+  if (entrance <= 0) return false;
+  std::uint32_t play = 0U;
+  std::uint16_t scene = 0U;
+  std::uint8_t room = 0U;
+  if (!ReadPlayState(process, &play, &scene, &room)) return false;
+  if (RequestTransition(process, play, entrance)) {
     mTransitionCooldown = kTransitionCooldownFrames;
-  } else {
-    mTransitionCooldown = 30U;
+    return true;
   }
+  mTransitionCooldown = 30U;
+  return false;
 }
 
 void NetplayWorldSync::FillLocalPose(NativeA32Process& process,

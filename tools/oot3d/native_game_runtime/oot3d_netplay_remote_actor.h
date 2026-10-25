@@ -19,6 +19,9 @@ public:
   void SetRemotePose(const NetplayPose* pose);
   void BeforeGuest(NativeA32Process& process);
   void Reset();
+  // Removes the actor before a scene transition so the native renderer cannot
+  // reuse a draw/model context that the transition is about to destroy.
+  void PrepareSceneTransition(NativeA32Process& process);
 
   [[nodiscard]] std::uint32_t ActorAddress() const noexcept { return mActor; }
   [[nodiscard]] std::uint32_t PendingAddress() const noexcept { return mPending; }
