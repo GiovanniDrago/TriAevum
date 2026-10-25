@@ -1,6 +1,6 @@
 # Two-Window Netplay Evaluation
 
-**Status**: M0 launcher, M1 loopback pose transport and M2 remote-player proxy are usable. M2.5 now spawns a guest-owned second Player actor for the remote pose and renders a real second Link. The older host-replay overlay is disabled. M3 has a world-state scaffold (scene/room, clock, health, wallet); flags/doors/chests and the remaining world systems are the current work.
+**Status**: M0 launcher, M1 loopback pose transport, M2 remote-player proxy and M2.5 guest-owned remote Link are usable. M3.1 synchronizes scene/room identity, entrance, clock, health, wallet, 64 switch flags and 64 collectible flags. Full door/chest actor animation, enemies, items and cutscenes remain pending.
 
 ## Goal
 
@@ -356,21 +356,33 @@ A synthetic loopback peer produced two visible Links in Link's house
 The remote Link still uses its own idle animation rather than the peer's
 animation/equipment; that is the remaining M2.5 polish.
 
-### M3 - world-state scaffold
+### M3.1 - world state
 
-The transport now carries `SceneId`, `RoomId`, `DayTime`, `Health` and
-`Wallet`. The host reads them from the native `PlayState`/`SaveContext`; the
-client applies clock, health and wallet only when both sessions report the same
-non-zero scene (`CanApplyRemoteWorld`). The client keeps its own save and never
-writes the host save. This is not full world replication: scene transitions,
-flags, doors, chests, items, enemies and cutscenes still diverge.
+The transport now carries `SceneId`, `RoomId`, `DayTime`, `Health`, `Wallet`,
+`EntranceId`, a 64-bit switch mask and a 64-bit collectible mask. The host reads
+switches from `PlayState +0x2228/+0x222C` and queries the title's
+`Flags_GetCollectible` helper; the client applies switches directly and calls
+`Flags_SetCollectible` for newly set bits. The client keeps its own save and
+never writes the host save.
+
+Flags are applied only when scene and room match; a remote peer in another
+room must transition first rather than inheriting that room's switches. The
+client requests the host entrance through the title's transition helper only
+after the local scene has been stable for two seconds and the entrance is
+non-zero. This guard prevents the name-entry/loading scene from accepting
+entrance 0 and leaving a half-built scene.
+
+This is not full world replication: existing door/chest actors may not animate
+immediately, enemies/items/cutscenes are still local-only, room changes without
+a valid entrance are not followed, and only the first 64 switch/collectible
+bits are carried.
 
 ### Verification
 
 - `oot3d_netplay_tests`: protocol loopback, pose/world round-trip,
   same-scene application policy, center/offscreen/behind-camera projection.
-- LLVM coverage for `oot3d_netplay.cpp`: 90.53% lines, 92.86% functions,
-  88.66% regions.
+- LLVM coverage for `oot3d_netplay.cpp`: 90.94% lines, 93.33% functions,
+  88.72% regions.
 - `oot3d_native_a32_input_tests`: controller path/GUID/serial round-trip and
   legacy config compatibility.
 - `three_ds_sdl_controller_tests`: SDL selection and device behavior.
@@ -381,6 +393,10 @@ flags, doors, chests, items, enemies and cutscenes still diverge.
   (`/tmp/opencode/netplay-actor5/shot.png`) with no cloned-draw artifact.
   Older host-replay overlay captures remain in `/tmp/opencode/netplay-zero2/`
   as the rejected approach.
+- Synthetic client world check: `/tmp/opencode/netplay-world-client4/run.log`
+  shows `local_room=0`, `switches=0x...5`, `collectibles=0x...3`, a clean exit
+  and no process fault. Host collectible queries are in
+  `/tmp/opencode/netplay-world-host/run.log`.
 - `title_to_existing_save.json` now selects the occupied save slot with
   `circle_y` before the A press; without it the run stops at name entry.
 

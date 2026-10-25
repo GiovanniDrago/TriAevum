@@ -37,9 +37,12 @@ struct WirePose {
   std::uint16_t Health = 0;
   std::uint16_t Wallet = 0;
   std::uint16_t Reserved = 0;
+  std::int32_t EntranceId = 0;
+  std::uint64_t SwitchFlags = 0;
+  std::uint64_t CollectibleFlags = 0;
 };
 
-static_assert(sizeof(WirePose) == 44U);
+static_assert(sizeof(WirePose) == 64U);
 
 void SetError(std::string* error, std::string message) {
   if (error != nullptr) *error = std::move(message);
@@ -160,6 +163,9 @@ void NetplaySession::SendPacket(PacketType type, const NetplayPose& pose) {
   packet.DayTime = pose.DayTime;
   packet.Health = pose.Health;
   packet.Wallet = pose.Wallet;
+  packet.EntranceId = pose.EntranceId;
+  packet.SwitchFlags = pose.SwitchFlags;
+  packet.CollectibleFlags = pose.CollectibleFlags;
 
   sockaddr_in peer{};
   peer.sin_family = AF_INET;
@@ -198,6 +204,9 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
     pose.DayTime = packet.DayTime;
     pose.Health = packet.Health;
     pose.Wallet = packet.Wallet;
+    pose.EntranceId = packet.EntranceId;
+    pose.SwitchFlags = packet.SwitchFlags;
+    pose.CollectibleFlags = packet.CollectibleFlags;
     if (!mHasRemote || pose.Sequence >= mRemote.Sequence) {
       mRemote = pose;
       mHasRemote = true;

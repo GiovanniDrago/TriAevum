@@ -16,6 +16,9 @@ struct NetplayPose {
   std::uint16_t DayTime = 0;
   std::uint16_t Health = 0;
   std::uint16_t Wallet = 0;
+  std::int32_t EntranceId = 0;
+  std::uint64_t SwitchFlags = 0;
+  std::uint64_t CollectibleFlags = 0;
 };
 
 struct NetplayScreenPoint {

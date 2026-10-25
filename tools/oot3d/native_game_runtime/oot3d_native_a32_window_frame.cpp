@@ -636,6 +636,7 @@ bool NativeA32WindowSession::RunFrame() {
           local.Wallet = value;
       }
     }
+    netplayWorldSync.FillLocalPose(process, &local);
     netplaySession.Poll(1.0 / 60.0, local);
     Oot3dNativeGame::NetplayPose remote;
     if (netplaySession.LatestRemotePose(&remote)) {
@@ -671,14 +672,18 @@ bool NativeA32WindowSession::RunFrame() {
         std::fprintf(stderr,
                      "TRIAEVUM_NETPLAY connected=%d local=%u local_pos=(%.2f,%.2f,%.2f) "
                      "remote=(%.2f,%.2f,%.2f) yaw=%.2f seq=%u "
-                     "scene=%u room=%u day=0x%04X health=0x%04X wallet=%u\n",
+                     "scene=%u local_room=%u room=%u day=0x%04X health=0x%04X wallet=%u "
+                     "entrance=%d switches=0x%016llX collect=0x%016llX\n",
                      netplaySession.Connected() ? 1 : 0,
                      static_cast<unsigned>(netplaySession.LocalPlayer()),
                      local.Position[0], local.Position[1], local.Position[2],
                      remote.Position[0], remote.Position[1], remote.Position[2],
                      remote.Yaw, remote.Sequence, remote.SceneId,
-                     remote.RoomId, remote.DayTime, remote.Health,
-                     remote.Wallet);
+                     static_cast<unsigned>(local.RoomId), remote.RoomId,
+                     remote.DayTime, remote.Health, remote.Wallet,
+                     remote.EntranceId,
+                     static_cast<unsigned long long>(remote.SwitchFlags),
+                     static_cast<unsigned long long>(remote.CollectibleFlags));
         if (netplayProbe.is_open()) {
           netplayProbe << "{\"schema\":\"triaevum.netplay.probe.v1\","
                           "\"host_frame\":" << frameCount
@@ -691,9 +696,13 @@ bool NativeA32WindowSession::RunFrame() {
                        << ",\"remote_sequence\":" << remote.Sequence
                        << ",\"scene_id\":" << remote.SceneId
                        << ",\"room_id\":" << remote.RoomId
+                       << ",\"local_room\":" << static_cast<unsigned>(local.RoomId)
                        << ",\"day_time\":" << remote.DayTime
                        << ",\"health\":" << remote.Health
                        << ",\"wallet\":" << remote.Wallet
+                       << ",\"entrance_id\":" << remote.EntranceId
+                       << ",\"switch_flags\":" << remote.SwitchFlags
+                       << ",\"collectible_flags\":" << remote.CollectibleFlags
                        << "}\n";
           netplayProbe.flush();
         }
@@ -1398,6 +1407,9 @@ void NativeA32WindowSession::RunGuestRefresh() {
     netplayRemoteActor.SetRemotePose(nullptr);
   }
   netplayRemoteActor.BeforeGuest(process);
+  netplayWorldSync.BeforeGuest(
+      process, netplaySession.Options().Host,
+      netplayRemotePose.has_value() ? &*netplayRemotePose : nullptr);
   sceneViewProbe.BeginGuestRefresh();
   phaseStart = std::chrono::steady_clock::now();
   processResult =

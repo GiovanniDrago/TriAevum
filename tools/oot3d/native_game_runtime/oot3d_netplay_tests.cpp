@@ -30,6 +30,9 @@ void Pump(Oot3dNativeGame::NetplaySession& host,
   hostPose.DayTime = 0x8123U;
   hostPose.Health = 0x30U;
   hostPose.Wallet = 42U;
+  hostPose.EntranceId = 0x11;
+  hostPose.SwitchFlags = 0x0102030405060708ULL;
+  hostPose.CollectibleFlags = 0x0807060504030201ULL;
   Oot3dNativeGame::NetplayPose clientPose;
   clientPose.Position = {-4.0F, 5.0F, 6.0F};
   clientPose.Yaw = -0.25F;
@@ -39,6 +42,9 @@ void Pump(Oot3dNativeGame::NetplaySession& host,
   clientPose.DayTime = 0x4000U;
   clientPose.Health = 0x2AU;
   clientPose.Wallet = 99U;
+  clientPose.EntranceId = 0x2A;
+  clientPose.SwitchFlags = 0x1122334455667788ULL;
+  clientPose.CollectibleFlags = 0x8877665544332211ULL;
   for (int i = 0; i < iterations; ++i) {
     host.Poll(1.0 / 60.0, hostPose);
     client.Poll(1.0 / 60.0, clientPose);
@@ -79,13 +85,19 @@ int main() {
               hostSees.Position[2] == 6.0F && hostSees.Yaw == -0.25F &&
               hostSees.Animation == 22U && hostSees.SceneId == 0x3EU &&
               hostSees.RoomId == 7U && hostSees.DayTime == 0x4000U &&
-              hostSees.Health == 0x2AU && hostSees.Wallet == 99U,
+              hostSees.Health == 0x2AU && hostSees.Wallet == 99U &&
+              hostSees.EntranceId == 0x2A &&
+              hostSees.SwitchFlags == 0x1122334455667788ULL &&
+              hostSees.CollectibleFlags == 0x8877665544332211ULL,
           "host received the wrong client pose");
   Require(clientSees.Position[0] == 1.0F && clientSees.Position[1] == 2.0F &&
               clientSees.Position[2] == 3.0F && clientSees.Yaw == 0.5F &&
               clientSees.Animation == 11U && clientSees.SceneId == 0x55U &&
               clientSees.RoomId == 2U && clientSees.DayTime == 0x8123U &&
-              clientSees.Health == 0x30U && clientSees.Wallet == 42U,
+              clientSees.Health == 0x30U && clientSees.Wallet == 42U &&
+              clientSees.EntranceId == 0x11 &&
+              clientSees.SwitchFlags == 0x0102030405060708ULL &&
+              clientSees.CollectibleFlags == 0x0807060504030201ULL,
           "client received the wrong host pose");
   Require(hostSees.Sequence != 0U && clientSees.Sequence != 0U,
           "pose sequence was not transported");
