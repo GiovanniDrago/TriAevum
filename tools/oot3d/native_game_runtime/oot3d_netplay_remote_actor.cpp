@@ -4,6 +4,8 @@
 
 #include <array>
 #include <cmath>
+#include <cstring>
+#include <span>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -29,6 +31,14 @@ constexpr std::uint32_t kActorWorldRot = 0x34U;
 constexpr std::uint32_t kActorShapeRot = 0xBCU;
 constexpr std::uint32_t kPlayerSkelAnime = 0x254U;
 constexpr std::uint32_t kSkelAnimeSize = 0x84U;
+constexpr std::uint32_t kSkelAnimationIndex = 0x30U;
+constexpr std::uint32_t kSkelCurrentFrame = 0x3CU;
+constexpr std::uint32_t kSkelPlaySpeed = 0x40U;
+constexpr std::uint32_t kSkelModelHandle = 0x28U;
+constexpr std::uint32_t kSkelJointMatrices = 0x78U;
+constexpr std::uint32_t kSkelMorphMatrices = 0x7CU;
+constexpr std::uint32_t kSkelAnimeUpdate = 0x0036B4ECU;
+constexpr float kSkelAnimeUpdateRate = 2.0F;
 constexpr std::uint32_t kActorUpdate = 0x13CU;
 constexpr std::uint32_t kActorDraw = 0x140U;
 constexpr std::uint32_t kActorSpawn = 0x003738D0U;
@@ -311,7 +321,63 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
       localId == kActorPlayer) {
     std::array<std::uint8_t, kSkelAnimeSize> animation{};
     if (memory.ReadBytes(localPlayer + kPlayerSkelAnime, animation)) {
+      // Preserve the remote actor's own model and pose buffers. Copying the
+      // local pointers would make a remote SkelAnime update overwrite the
+      // local Link's joint matrices.
+      std::array<std::uint8_t, kSkelAnimeSize> remoteAnimation{};
+      std::array<std::uint8_t, 12> remoteBuffers{};
+      if (memory.ReadBytes(actor + kPlayerSkelAnime, remoteAnimation)) {
+        std::memcpy(remoteBuffers.data(), remoteAnimation.data() + kSkelModelHandle, 4);
+        std::memcpy(remoteBuffers.data() + 4, remoteAnimation.data() + kSkelJointMatrices, 4);
+        std::memcpy(remoteBuffers.data() + 8, remoteAnimation.data() + kSkelMorphMatrices, 4);
+      }
       (void)memory.WriteBytes(actor + kPlayerSkelAnime, animation);
+      // Restore the actor-owned model and matrices, then advance the remote
+      // SkelAnime itself. The guest has no remote actor update callback.
+      if (!remoteBuffers.empty()) {
+        (void)memory.WriteBytes(actor + kPlayerSkelAnime + kSkelModelHandle,
+                                std::span<const std::uint8_t>(remoteBuffers.data(), 4));
+        (void)memory.WriteBytes(actor + kPlayerSkelAnime + kSkelJointMatrices,
+                                std::span<const std::uint8_t>(remoteBuffers.data() + 4, 4));
+        (void)memory.WriteBytes(actor + kPlayerSkelAnime + kSkelMorphMatrices,
+                                std::span<const std::uint8_t>(remoteBuffers.data() + 8, 4));
+      }
+      auto state = process.PrimaryThreadState();
+      state.r[0] = actor + kPlayerSkelAnime;
+      state.r[1] = mPlay;
+      state.vfp[0] = std::bit_cast<std::uint32_t>(kSkelAnimeUpdateRate);
+      std::string error;
+      (void)process.InvokeFunctionWithState(kSkelAnimeUpdate, state,
+                                            0x60000000U, &error);
+      static std::uint32_t diagnosticTick = 0;
+      if (TraceEnabled() && (++diagnosticTick % 30U) == 1U) {
+        std::int32_t localIndex = 0;
+        std::int32_t remoteIndex = 0;
+        float localFrame = 0.0F;
+        float remoteFrame = 0.0F;
+        float localSpeed = 0.0F;
+        std::uint32_t localModel = 0U;
+        std::uint32_t remoteModel = 0U;
+        memory.Read32(localPlayer + kPlayerSkelAnime + kSkelAnimationIndex,
+                      reinterpret_cast<std::uint32_t*>(&localIndex));
+        memory.Read32(actor + kPlayerSkelAnime + kSkelAnimationIndex,
+                      reinterpret_cast<std::uint32_t*>(&remoteIndex));
+        memory.Read32(localPlayer + kPlayerSkelAnime + kSkelCurrentFrame,
+                      reinterpret_cast<std::uint32_t*>(&localFrame));
+        memory.Read32(actor + kPlayerSkelAnime + kSkelCurrentFrame,
+                      reinterpret_cast<std::uint32_t*>(&remoteFrame));
+        memory.Read32(localPlayer + kPlayerSkelAnime + kSkelPlaySpeed,
+                      reinterpret_cast<std::uint32_t*>(&localSpeed));
+        memory.Read32(localPlayer + kPlayerSkelAnime + kSkelModelHandle,
+                      &localModel);
+        memory.Read32(actor + kPlayerSkelAnime + kSkelModelHandle, &remoteModel);
+        std::fprintf(stderr,
+                     "TRIAEVUM_NETPLAY_REMOTE_ANIM local_index=%d remote_index=%d "
+                     "local_frame=%.3f remote_frame=%.3f local_speed=%.3f "
+                     "local_model=0x%08X remote_model=0x%08X\n",
+                     localIndex, remoteIndex, localFrame, remoteFrame, localSpeed,
+                     localModel, remoteModel);
+      }
     }
   }
 }

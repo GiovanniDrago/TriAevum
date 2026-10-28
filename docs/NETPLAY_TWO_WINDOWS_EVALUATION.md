@@ -350,14 +350,17 @@ the guest-owned actor in `oot3d_netplay_remote_actor.cpp`:
   draw callback and object slot are inherited from the local Player;
 - the host runtime writes world position, home position and yaw;
 - the local Player's live SkelAnime state is mirrored into the remote actor
-  every frame, because the remote actor's update is intentionally the no-op;
+  every frame, while the remote keeps its own model/joint buffers;
+- the native `SkelAnime_Update` is then run on the remote actor's own state,
+  which advances the pose even though the actor update is a no-op;
 - an invalid/timed-out actor is killed and respawned with a cooldown.
 
 A synthetic loopback peer produced two visible Links in Link's house, with the
-local camera and HUD intact (`/tmp/opencode/netplay-anim2/shot_001000.png` and
-`shot_001100.png`). The remote Link now stands upright and visibly animates,
-but it mirrors the local Player's animation rather than the peer's own
-animation/equipment; independent remote animation is still M2.5 polish.
+local camera and HUD intact (`/tmp/opencode/netplay-anim-update/shot_001000.png`;
+animation frames in `/tmp/opencode/netplay-anim-update/run.log`). The remote
+Link stands upright and visibly animates, but it mirrors the local Player's
+animation rather than the peer's own animation/equipment; independent remote
+animation is still M2.5 polish.
 
 Background controller input is enabled before SDL's controller subsystem
 starts (`SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS`) and in the Vulkan ImGui
@@ -402,8 +405,10 @@ bits are carried.
   shader preparation remains the main launcher timing issue, handled by the
   readiness wait and warm-cache source.
 - Visual check: the guest-owned remote actor produced a second upright,
-  animated Link (`/tmp/opencode/netplay-anim2/shot_001000.png` and
-  `shot_001100.png`) with no cloned-draw artifact. Older host-replay overlay
+  animated Link (`/tmp/opencode/netplay-anim-update/shot_001000.png`) with no
+  cloned-draw artifact. A diagnostic run shows local/remote animation frames
+  advancing together (`TRIAEVUM_NETPLAY_REMOTE_ANIM` in
+  `/tmp/opencode/netplay-anim-update/run.log`). Older host-replay overlay
   captures remain in `/tmp/opencode/netplay-zero2/` as the rejected approach.
 - Synthetic client world check: `/tmp/opencode/netplay-world-client4/run.log`
   shows `local_room=0`, `switches=0x...5`, `collectibles=0x...3`, a clean exit
