@@ -25,6 +25,10 @@ void Pump(Oot3dNativeGame::NetplaySession& host,
   hostPose.Position = {1.0F, 2.0F, 3.0F};
   hostPose.Yaw = 0.5F;
   hostPose.Animation = 11U;
+  hostPose.AnimationFrame = 12.5F;
+  hostPose.AnimationSpeed = 1.25F;
+  hostPose.AnimationStart = 2.0F;
+  hostPose.AnimationEnd = 30.0F;
   hostPose.SceneId = 0x55U;
   hostPose.RoomId = 2U;
   hostPose.DayTime = 0x8123U;
@@ -37,6 +41,10 @@ void Pump(Oot3dNativeGame::NetplaySession& host,
   clientPose.Position = {-4.0F, 5.0F, 6.0F};
   clientPose.Yaw = -0.25F;
   clientPose.Animation = 22U;
+  clientPose.AnimationFrame = 3.5F;
+  clientPose.AnimationSpeed = 0.75F;
+  clientPose.AnimationStart = 1.0F;
+  clientPose.AnimationEnd = 20.0F;
   clientPose.SceneId = 0x3EU;
   clientPose.RoomId = 7U;
   clientPose.DayTime = 0x4000U;
@@ -83,7 +91,11 @@ int main() {
   Require(client.LatestRemotePose(&clientSees), "client has no remote pose");
   Require(hostSees.Position[0] == -4.0F && hostSees.Position[1] == 5.0F &&
               hostSees.Position[2] == 6.0F && hostSees.Yaw == -0.25F &&
-              hostSees.Animation == 22U && hostSees.SceneId == 0x3EU &&
+              hostSees.Animation == 22U && hostSees.AnimationFrame == 3.5F &&
+              hostSees.AnimationSpeed == 0.75F &&
+              hostSees.AnimationStart == 1.0F &&
+              hostSees.AnimationEnd == 20.0F &&
+              hostSees.SceneId == 0x3EU &&
               hostSees.RoomId == 7U && hostSees.DayTime == 0x4000U &&
               hostSees.Health == 0x2AU && hostSees.Wallet == 99U &&
               hostSees.EntranceId == 0x2A &&
@@ -92,7 +104,12 @@ int main() {
           "host received the wrong client pose");
   Require(clientSees.Position[0] == 1.0F && clientSees.Position[1] == 2.0F &&
               clientSees.Position[2] == 3.0F && clientSees.Yaw == 0.5F &&
-              clientSees.Animation == 11U && clientSees.SceneId == 0x55U &&
+              clientSees.Animation == 11U &&
+              clientSees.AnimationFrame == 12.5F &&
+              clientSees.AnimationSpeed == 1.25F &&
+              clientSees.AnimationStart == 2.0F &&
+              clientSees.AnimationEnd == 30.0F &&
+              clientSees.SceneId == 0x55U &&
               clientSees.RoomId == 2U && clientSees.DayTime == 0x8123U &&
               clientSees.Health == 0x30U && clientSees.Wallet == 42U &&
               clientSees.EntranceId == 0x11 &&

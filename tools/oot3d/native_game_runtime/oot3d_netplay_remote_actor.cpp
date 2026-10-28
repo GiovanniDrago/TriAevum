@@ -83,6 +83,7 @@ void NetplayRemoteActor::Reset() {
   mPendingFrames = 0;
   mCooldown = 0;
   mScene = 0;
+  mAnimationInitialized = false;
 }
 
 void NetplayRemoteActor::BeforeGuest(NativeA32Process& process) {
@@ -112,6 +113,7 @@ void NetplayRemoteActor::BeforeGuest(NativeA32Process& process) {
   if (mActor != 0U) {
     if (!ActorUsable(process, mActor)) {
       mActor = 0U;
+      mAnimationInitialized = false;
       mCooldown = 0;
     } else {
       ApplyPose(process, mActor, *mRemote);
@@ -311,8 +313,9 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
   memory.Write16(actor + kActorShapeRot + 2U,
                  static_cast<std::uint16_t>(yaw));
   // The remote actor has no update callback, so its own SkelAnime never
-  // advances. Mirror the local Player's live animation state for now; the
-  // remote's own animation ID will replace this once it is streamed.
+  // advances. Initialize its animation resources from the local Player once,
+  // then apply the peer's streamed index/frame range and advance the remote
+  // actor's own pose buffers.
   std::uint32_t localPlayer = 0U;
   std::uint16_t localId = 0xFFFFU;
   if (mPlay != 0U &&
@@ -320,7 +323,9 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
       memory.Read16(localPlayer + kActorId, &localId) &&
       localId == kActorPlayer) {
     std::array<std::uint8_t, kSkelAnimeSize> animation{};
-    if (memory.ReadBytes(localPlayer + kPlayerSkelAnime, animation)) {
+    const bool haveLocalAnimation =
+        memory.ReadBytes(localPlayer + kPlayerSkelAnime, animation);
+    if (haveLocalAnimation && !mAnimationInitialized) {
       // Preserve the remote actor's own model and pose buffers. Copying the
       // local pointers would make a remote SkelAnime update overwrite the
       // local Link's joint matrices.
@@ -332,8 +337,6 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
         std::memcpy(remoteBuffers.data() + 8, remoteAnimation.data() + kSkelMorphMatrices, 4);
       }
       (void)memory.WriteBytes(actor + kPlayerSkelAnime, animation);
-      // Restore the actor-owned model and matrices, then advance the remote
-      // SkelAnime itself. The guest has no remote actor update callback.
       if (!remoteBuffers.empty()) {
         (void)memory.WriteBytes(actor + kPlayerSkelAnime + kSkelModelHandle,
                                 std::span<const std::uint8_t>(remoteBuffers.data(), 4));
@@ -342,6 +345,46 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
         (void)memory.WriteBytes(actor + kPlayerSkelAnime + kSkelMorphMatrices,
                                 std::span<const std::uint8_t>(remoteBuffers.data() + 8, 4));
       }
+      mAnimationInitialized = true;
+    }
+    const bool streamedAnimation =
+        std::isfinite(pose.AnimationFrame) &&
+        std::isfinite(pose.AnimationSpeed) &&
+        std::isfinite(pose.AnimationStart) &&
+        std::isfinite(pose.AnimationEnd) &&
+        pose.AnimationEnd > pose.AnimationStart;
+    if (streamedAnimation) {
+      memory.Write32(actor + kPlayerSkelAnime + kSkelAnimationIndex,
+                     pose.Animation);
+      memory.Write32(actor + kPlayerSkelAnime + kSkelCurrentFrame,
+                     std::bit_cast<std::uint32_t>(pose.AnimationFrame));
+      memory.Write32(actor + kPlayerSkelAnime + kSkelPlaySpeed,
+                     std::bit_cast<std::uint32_t>(pose.AnimationSpeed));
+      memory.Write32(actor + kPlayerSkelAnime + 0x44U,
+                     std::bit_cast<std::uint32_t>(pose.AnimationStart));
+      memory.Write32(actor + kPlayerSkelAnime + 0x48U,
+                     std::bit_cast<std::uint32_t>(pose.AnimationEnd));
+      memory.Write32(actor + kPlayerSkelAnime + 0x4CU,
+                     std::bit_cast<std::uint32_t>(pose.AnimationEnd -
+                                                  pose.AnimationStart));
+    } else if (haveLocalAnimation) {
+      // Compatibility fallback for peers that do not yet stream animation.
+      std::array<std::uint8_t, 12> remoteBuffers{};
+      std::array<std::uint8_t, kSkelAnimeSize> remoteAnimation{};
+      if (memory.ReadBytes(actor + kPlayerSkelAnime, remoteAnimation)) {
+        std::memcpy(remoteBuffers.data(), remoteAnimation.data() + kSkelModelHandle, 4);
+        std::memcpy(remoteBuffers.data() + 4, remoteAnimation.data() + kSkelJointMatrices, 4);
+        std::memcpy(remoteBuffers.data() + 8, remoteAnimation.data() + kSkelMorphMatrices, 4);
+      }
+      (void)memory.WriteBytes(actor + kPlayerSkelAnime, animation);
+      (void)memory.WriteBytes(actor + kPlayerSkelAnime + kSkelModelHandle,
+                              std::span<const std::uint8_t>(remoteBuffers.data(), 4));
+      (void)memory.WriteBytes(actor + kPlayerSkelAnime + kSkelJointMatrices,
+                              std::span<const std::uint8_t>(remoteBuffers.data() + 4, 4));
+      (void)memory.WriteBytes(actor + kPlayerSkelAnime + kSkelMorphMatrices,
+                              std::span<const std::uint8_t>(remoteBuffers.data() + 8, 4));
+    }
+    if (mAnimationInitialized) {
       auto state = process.PrimaryThreadState();
       state.r[0] = actor + kPlayerSkelAnime;
       state.r[1] = mPlay;
@@ -349,8 +392,9 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
       std::string error;
       (void)process.InvokeFunctionWithState(kSkelAnimeUpdate, state,
                                             0x60000000U, &error);
-      static std::uint32_t diagnosticTick = 0;
-      if (TraceEnabled() && (++diagnosticTick % 30U) == 1U) {
+    }
+    static std::uint32_t diagnosticTick = 0;
+    if (TraceEnabled() && (++diagnosticTick % 30U) == 1U) {
         std::int32_t localIndex = 0;
         std::int32_t remoteIndex = 0;
         float localFrame = 0.0F;
@@ -377,7 +421,6 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
                      "local_model=0x%08X remote_model=0x%08X\n",
                      localIndex, remoteIndex, localFrame, remoteFrame, localSpeed,
                      localModel, remoteModel);
-      }
     }
   }
 }
@@ -397,6 +440,7 @@ void NetplayRemoteActor::Abandon(NativeA32Process& process) {
   mActor = 0;
   mPending = 0;
   mPendingFrames = 0;
+  mAnimationInitialized = false;
   if (actor == 0U) return;
   if (!ActorInCurrentLists(process, mPlay, actor)) return;
   std::uint16_t id = 0xFFFFU;

@@ -31,6 +31,10 @@ struct WirePose {
   float Z = 0.0F;
   float Yaw = 0.0F;
   std::uint32_t Animation = 0;
+  float AnimationFrame = 0.0F;
+  float AnimationSpeed = 0.0F;
+  float AnimationStart = 0.0F;
+  float AnimationEnd = 0.0F;
   std::uint16_t SceneId = 0;
   std::uint16_t RoomId = 0;
   std::uint16_t DayTime = 0;
@@ -42,7 +46,7 @@ struct WirePose {
   std::uint64_t CollectibleFlags = 0;
 };
 
-static_assert(sizeof(WirePose) == 64U);
+static_assert(sizeof(WirePose) == 80U);
 
 void SetError(std::string* error, std::string message) {
   if (error != nullptr) *error = std::move(message);
@@ -158,6 +162,10 @@ void NetplaySession::SendPacket(PacketType type, const NetplayPose& pose) {
   packet.Z = pose.Position[2];
   packet.Yaw = pose.Yaw;
   packet.Animation = pose.Animation;
+  packet.AnimationFrame = pose.AnimationFrame;
+  packet.AnimationSpeed = pose.AnimationSpeed;
+  packet.AnimationStart = pose.AnimationStart;
+  packet.AnimationEnd = pose.AnimationEnd;
   packet.SceneId = pose.SceneId;
   packet.RoomId = pose.RoomId;
   packet.DayTime = pose.DayTime;
@@ -199,6 +207,10 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
     pose.Position = {packet.X, packet.Y, packet.Z};
     pose.Yaw = packet.Yaw;
     pose.Animation = packet.Animation;
+    pose.AnimationFrame = packet.AnimationFrame;
+    pose.AnimationSpeed = packet.AnimationSpeed;
+    pose.AnimationStart = packet.AnimationStart;
+    pose.AnimationEnd = packet.AnimationEnd;
     pose.SceneId = packet.SceneId;
     pose.RoomId = packet.RoomId;
     pose.DayTime = packet.DayTime;

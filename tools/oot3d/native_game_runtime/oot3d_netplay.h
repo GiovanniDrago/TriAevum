@@ -11,6 +11,10 @@ struct NetplayPose {
   std::array<float, 3> Position{};
   float Yaw = 0.0F;
   std::uint32_t Animation = 0;
+  float AnimationFrame = 0.0F;
+  float AnimationSpeed = 0.0F;
+  float AnimationStart = 0.0F;
+  float AnimationEnd = 0.0F;
   std::uint16_t SceneId = 0;
   std::uint16_t RoomId = 0;
   std::uint16_t DayTime = 0;

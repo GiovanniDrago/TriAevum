@@ -615,6 +615,28 @@ bool NativeA32WindowSession::RunFrame() {
           local.Position[axis] = std::bit_cast<float>(bits[axis]);
         local.Yaw = static_cast<float>(static_cast<std::int16_t>(yaw)) *
                     (3.14159265358979323846F / 32768.0F);
+        constexpr std::uint32_t kPlayerSkelAnime = 0x254U;
+        std::uint32_t animationIndex = 0U;
+        std::uint32_t animationFrame = 0U;
+        std::uint32_t animationSpeed = 0U;
+        std::uint32_t animationStart = 0U;
+        std::uint32_t animationEnd = 0U;
+        if (process.Memory().Read32(actor + kPlayerSkelAnime + 0x30U,
+                                    &animationIndex) &&
+            process.Memory().Read32(actor + kPlayerSkelAnime + 0x3CU,
+                                    &animationFrame) &&
+            process.Memory().Read32(actor + kPlayerSkelAnime + 0x40U,
+                                    &animationSpeed) &&
+            process.Memory().Read32(actor + kPlayerSkelAnime + 0x44U,
+                                    &animationStart) &&
+            process.Memory().Read32(actor + kPlayerSkelAnime + 0x48U,
+                                    &animationEnd)) {
+          local.Animation = animationIndex;
+          local.AnimationFrame = std::bit_cast<float>(animationFrame);
+          local.AnimationSpeed = std::bit_cast<float>(animationSpeed);
+          local.AnimationStart = std::bit_cast<float>(animationStart);
+          local.AnimationEnd = std::bit_cast<float>(animationEnd);
+        }
         const auto sceneSnapshot = sceneViewProbe.Capture(process.Memory());
         if (sceneSnapshot.has_value()) {
           if (sceneSnapshot->SceneId.has_value())
@@ -673,7 +695,8 @@ bool NativeA32WindowSession::RunFrame() {
                      "TRIAEVUM_NETPLAY connected=%d local=%u local_pos=(%.2f,%.2f,%.2f) "
                      "remote=(%.2f,%.2f,%.2f) yaw=%.2f seq=%u "
                      "scene=%u local_room=%u room=%u day=0x%04X health=0x%04X wallet=%u "
-                     "entrance=%d switches=0x%016llX collect=0x%016llX\n",
+                     "entrance=%d switches=0x%016llX collect=0x%016llX "
+                     "anim=%u frame=%.2f speed=%.2f\n",
                      netplaySession.Connected() ? 1 : 0,
                      static_cast<unsigned>(netplaySession.LocalPlayer()),
                      local.Position[0], local.Position[1], local.Position[2],
@@ -683,7 +706,9 @@ bool NativeA32WindowSession::RunFrame() {
                      remote.DayTime, remote.Health, remote.Wallet,
                      remote.EntranceId,
                      static_cast<unsigned long long>(remote.SwitchFlags),
-                     static_cast<unsigned long long>(remote.CollectibleFlags));
+                     static_cast<unsigned long long>(remote.CollectibleFlags),
+                     remote.Animation, remote.AnimationFrame,
+                     remote.AnimationSpeed);
         if (netplayProbe.is_open()) {
           netplayProbe << "{\"schema\":\"triaevum.netplay.probe.v1\","
                           "\"host_frame\":" << frameCount
@@ -703,6 +728,9 @@ bool NativeA32WindowSession::RunFrame() {
                        << ",\"entrance_id\":" << remote.EntranceId
                        << ",\"switch_flags\":" << remote.SwitchFlags
                        << ",\"collectible_flags\":" << remote.CollectibleFlags
+                       << ",\"animation\":" << remote.Animation
+                       << ",\"animation_frame\":" << remote.AnimationFrame
+                       << ",\"animation_speed\":" << remote.AnimationSpeed
                        << "}\n";
           netplayProbe.flush();
         }

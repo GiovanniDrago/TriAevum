@@ -45,6 +45,7 @@ private:
   std::uint32_t mPendingFrames = 0;
   std::uint32_t mCooldown = 0;
   std::uint16_t mScene = 0;
+  mutable bool mAnimationInitialized = false;
 };
 
 } // namespace Oot3dNativeGame
