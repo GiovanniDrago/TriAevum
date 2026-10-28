@@ -398,7 +398,7 @@ bits are carried.
 
 - `oot3d_netplay_tests`: protocol loopback, pose/world round-trip,
   same-scene application policy, center/offscreen/behind-camera projection.
-- LLVM coverage for `oot3d_netplay.cpp`: 90.94% lines, 93.33% functions,
+- LLVM coverage for `oot3d_netplay.cpp`: 91.20% lines, 93.33% functions,
   88.72% regions.
 - `oot3d_native_a32_input_tests`: controller path/GUID/serial round-trip and
   legacy config compatibility.
