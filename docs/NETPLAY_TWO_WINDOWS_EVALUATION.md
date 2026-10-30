@@ -364,7 +364,7 @@ the guest-owned actor in `oot3d_netplay_remote_actor.cpp`:
   draw callback and object slot are inherited from the local Player;
 - the host runtime writes world position, home position and yaw;
 - the pose packet carries the peer's animation index, frame, speed and frame
-  range;
+  range, and remote position/yaw are interpolated between snapshots;
 - the remote keeps its own model/joint buffers and applies those streamed
   fields, then runs the native `SkelAnime_Update`; if an older peer sends no
   range, the local Player's SkelAnime is mirrored as a compatibility fallback;

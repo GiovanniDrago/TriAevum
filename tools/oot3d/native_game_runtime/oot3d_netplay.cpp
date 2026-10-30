@@ -294,6 +294,19 @@ bool CanApplyRemoteWorld(const NetplayPose& local, const NetplayPose& remote) {
   return local.SceneId != 0U && remote.SceneId == local.SceneId;
 }
 
+NetplayPose InterpolateNetplayPose(const NetplayPose& from,
+                                   const NetplayPose& to, float alpha) {
+  NetplayPose pose = to;
+  const float t = std::clamp(alpha, 0.0F, 1.0F);
+  for (size_t axis = 0; axis < 3U; ++axis)
+    pose.Position[axis] =
+        from.Position[axis] + (to.Position[axis] - from.Position[axis]) * t;
+  const double delta = std::remainder(
+      static_cast<double>(to.Yaw - from.Yaw), 6.28318530717958647692);
+  pose.Yaw = static_cast<float>(from.Yaw + delta * t);
+  return pose;
+}
+
 std::int16_t NetplayYawToBinaryAngle(float radians) {
   constexpr float kScale = 32768.0F / 3.14159265358979323846F;
   const float value = std::round(radians * kScale);

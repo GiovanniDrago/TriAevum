@@ -34,11 +34,14 @@ private:
   bool ActorInCurrentLists(NativeA32Process& process, std::uint32_t play,
                            std::uint32_t actor) const;
   bool ActorUsable(NativeA32Process& process, std::uint32_t actor) const;
+  [[nodiscard]] NetplayPose CurrentPose() const;
   void ApplyPose(NativeA32Process& process, std::uint32_t actor,
                  const NetplayPose& pose) const;
   void Abandon(NativeA32Process& process);
 
   std::optional<NetplayPose> mRemote;
+  std::optional<NetplayPose> mPreviousPose;
+  float mPoseBlend = 1.0F;
   std::uint32_t mPlay = 0;
   std::uint32_t mActor = 0;
   std::uint32_t mPending = 0;

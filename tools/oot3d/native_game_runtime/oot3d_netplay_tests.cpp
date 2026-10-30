@@ -139,6 +139,20 @@ int main() {
   Require(Oot3dNativeGame::NetplayYawToBinaryAngle(
               -3.14159265358979323846F) == -32768,
           "negative pi yaw did not clamp");
+  Oot3dNativeGame::NetplayPose interpolateFrom;
+  interpolateFrom.Position = {0.0F, 0.0F, 0.0F};
+  interpolateFrom.Yaw = 3.0F;
+  Oot3dNativeGame::NetplayPose interpolateTo = interpolateFrom;
+  interpolateTo.Position = {10.0F, 4.0F, -2.0F};
+  interpolateTo.Yaw = -3.0F;
+  interpolateTo.SceneId = 7U;
+  const auto halfway = Oot3dNativeGame::InterpolateNetplayPose(
+      interpolateFrom, interpolateTo, 0.5F);
+  Require(halfway.Position[0] == 5.0F && halfway.Position[1] == 2.0F &&
+              halfway.Position[2] == -1.0F && halfway.SceneId == 7U,
+          "pose interpolation lost position/state");
+  Require(std::abs(std::abs(halfway.Yaw) - 3.14159265358979323846F) < 0.001F,
+          "pose interpolation did not take the short yaw path");
   Oot3dNativeGame::NetplayPose projectionPose;
   projectionPose.Position = {0.0F, 0.0F, 0.0F};
   const auto centered = Oot3dNativeGame::ProjectNetplayPoint(

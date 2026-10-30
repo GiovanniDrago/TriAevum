@@ -37,6 +37,11 @@ struct NetplayScreenPoint {
 // sessions have entered the same scene. Scene 0 is the pre-play/title state.
 bool CanApplyRemoteWorld(const NetplayPose& local, const NetplayPose& remote);
 
+// Interpolates the remote pose while keeping topology/scene/animation fields
+// from the target snapshot. Yaw uses the shortest binary-angle path.
+NetplayPose InterpolateNetplayPose(const NetplayPose& from,
+                                   const NetplayPose& to, float alpha);
+
 // Converts the network's radians to the guest's s16 binary angle. Kept pure so
 // the remote-actor transform and the packet tests share one definition.
 std::int16_t NetplayYawToBinaryAngle(float radians);

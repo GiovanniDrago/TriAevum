@@ -70,13 +70,29 @@ bool WriteFloat(NativeA32Memory& memory, std::uint32_t address, float value) {
 void NetplayRemoteActor::SetRemotePose(const NetplayPose* pose) {
   if (pose == nullptr) {
     mRemote.reset();
+    mPreviousPose.reset();
+    mPoseBlend = 1.0F;
     return;
+  }
+  const bool newSequence = !mRemote.has_value() ||
+                           mRemote->Sequence != pose->Sequence;
+  if (newSequence) {
+    mPreviousPose = mRemote.has_value() ? *mRemote : *pose;
+    mPoseBlend = 0.0F;
   }
   mRemote = *pose;
 }
 
+NetplayPose NetplayRemoteActor::CurrentPose() const {
+  if (!mRemote.has_value()) return {};
+  if (!mPreviousPose.has_value()) return *mRemote;
+  return InterpolateNetplayPose(*mPreviousPose, *mRemote, mPoseBlend);
+}
+
 void NetplayRemoteActor::Reset() {
   mRemote.reset();
+  mPreviousPose.reset();
+  mPoseBlend = 1.0F;
   mPlay = 0;
   mActor = 0;
   mPending = 0;
@@ -110,13 +126,17 @@ void NetplayRemoteActor::BeforeGuest(NativeA32Process& process) {
     return;
   }
 
+  if (mPoseBlend < 1.0F) {
+    mPoseBlend = std::min(1.0F, mPoseBlend + 0.35F);
+  }
+  const NetplayPose pose = CurrentPose();
   if (mActor != 0U) {
     if (!ActorUsable(process, mActor)) {
       mActor = 0U;
       mAnimationInitialized = false;
       mCooldown = 0;
     } else {
-      ApplyPose(process, mActor, *mRemote);
+      ApplyPose(process, mActor, pose);
       return;
     }
   }
@@ -127,7 +147,7 @@ void NetplayRemoteActor::BeforeGuest(NativeA32Process& process) {
       mActor = mPending;
       mPending = 0;
       mPendingFrames = 0;
-      ApplyPose(process, mActor, *mRemote);
+      ApplyPose(process, mActor, pose);
       if (TraceEnabled()) {
         std::fprintf(stderr,
                      "TRIAEVUM_NETPLAY_REMOTE_ACTOR ready=0x%08X scene=%u\n",
