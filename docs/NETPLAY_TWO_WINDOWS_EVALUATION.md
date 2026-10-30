@@ -316,6 +316,20 @@ GUIDs and no serial, so `controller_path` is mandatory for correct pinning.
 - optional `--netplay-probe` JSONL with connection and remote pose.
 
 The launcher wires p1 as host and p2 as client on `127.0.0.1:27888` by default.
+
+Stable launch helper:
+
+```bash
+scripts/linux/run-netplay-two-windows.sh --p1 0 --p2 1
+```
+
+It builds the current game/launcher, installs the current binary into the
+installed development package (so the title plugin resolves beside it), uses the
+installed package's launch profile/config/save seed, and starts the launcher.
+Set `TRIAEVUM_SKIP_BUILD=1` to reuse the current build, or override
+`TRIAEVUM_DEV_PACKAGE`, `TRIAEVUM_DEV_DATA`, `TRIAEVUM_NETPLAY_ROOT` and
+`TRIAEVUM_CACHE_SOURCE`. Do not use the temporary paths from earlier debugging
+sessions under `/tmp/opencode`; those directories are disposable and disappear.
 Two real instances connected in the spike and both wrote netplay probes with
 `connected=true` and remote poses.
 
