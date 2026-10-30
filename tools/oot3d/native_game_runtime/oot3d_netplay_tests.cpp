@@ -135,6 +135,15 @@ int main() {
   remoteWorld.SceneId = 0U;
   Require(!Oot3dNativeGame::CanApplyRemoteWorld(localWorld, remoteWorld),
           "pre-play remote world was accepted");
+  localWorld.SceneId = 0x55U;
+  remoteWorld.SceneId = 0x55U;
+  localWorld.SceneSerial = 3U;
+  remoteWorld.SceneSerial = 3U;
+  Require(Oot3dNativeGame::CanApplyRemoteResources(localWorld, remoteWorld),
+          "post-transition resources were rejected");
+  localWorld.SceneSerial = 0U;
+  Require(!Oot3dNativeGame::CanApplyRemoteResources(localWorld, remoteWorld),
+          "pre-transition resources were accepted");
   Require(Oot3dNativeGame::NetplayYawToBinaryAngle(0.0F) == 0,
           "zero yaw did not convert");
   Require(Oot3dNativeGame::NetplayYawToBinaryAngle(3.14159265358979323846F) ==

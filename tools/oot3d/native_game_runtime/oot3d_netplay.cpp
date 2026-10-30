@@ -297,6 +297,12 @@ bool CanApplyRemoteWorld(const NetplayPose& local, const NetplayPose& remote) {
   return local.SceneId != 0U && remote.SceneId == local.SceneId;
 }
 
+bool CanApplyRemoteResources(const NetplayPose& local,
+                             const NetplayPose& remote) {
+  return CanApplyRemoteWorld(local, remote) && local.SceneSerial != 0U &&
+         remote.SceneSerial == local.SceneSerial;
+}
+
 NetplayPose InterpolateNetplayPose(const NetplayPose& from,
                                    const NetplayPose& to, float alpha) {
   NetplayPose pose = to;

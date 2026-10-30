@@ -38,6 +38,12 @@ struct NetplayScreenPoint {
 // sessions have entered the same scene. Scene 0 is the pre-play/title state.
 bool CanApplyRemoteWorld(const NetplayPose& local, const NetplayPose& remote);
 
+// Resources are only overwritten after a synchronized scene change. Initial
+// same-scene joins must not copy a peer's rupees/health before world state has
+// been established.
+bool CanApplyRemoteResources(const NetplayPose& local,
+                             const NetplayPose& remote);
+
 // Interpolates the remote pose while keeping topology/scene/animation fields
 // from the target snapshot. Yaw uses the shortest binary-angle path.
 NetplayPose InterpolateNetplayPose(const NetplayPose& from,

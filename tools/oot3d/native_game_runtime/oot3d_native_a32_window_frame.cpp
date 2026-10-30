@@ -669,7 +669,7 @@ bool NativeA32WindowSession::RunFrame() {
       // the host's clock and player resources are authoritative. Scene
       // transitions, flags, doors, items and enemies are still local-only.
       if (!netplaySession.Options().Host &&
-          Oot3dNativeGame::CanApplyRemoteWorld(local, remote)) {
+          Oot3dNativeGame::CanApplyRemoteResources(local, remote)) {
         constexpr std::uint32_t kSaveContext = 0x00587958U;
         static std::uint16_t appliedDayTime = 0xFFFFU;
         static std::uint16_t appliedHealth = 0xFFFFU;
