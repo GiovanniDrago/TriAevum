@@ -696,7 +696,7 @@ bool NativeA32WindowSession::RunFrame() {
                      "remote=(%.2f,%.2f,%.2f) yaw=%.2f seq=%u "
                      "scene=%u local_room=%u room=%u day=0x%04X health=0x%04X wallet=%u "
                      "entrance=%d switches=0x%016llX collect=0x%016llX "
-                     "anim=%u frame=%.2f speed=%.2f\n",
+                     "scene_serial=%u anim=%u frame=%.2f speed=%.2f\n",
                      netplaySession.Connected() ? 1 : 0,
                      static_cast<unsigned>(netplaySession.LocalPlayer()),
                      local.Position[0], local.Position[1], local.Position[2],
@@ -707,8 +707,8 @@ bool NativeA32WindowSession::RunFrame() {
                      remote.EntranceId,
                      static_cast<unsigned long long>(remote.SwitchFlags),
                      static_cast<unsigned long long>(remote.CollectibleFlags),
-                     remote.Animation, remote.AnimationFrame,
-                     remote.AnimationSpeed);
+                     remote.SceneSerial, remote.Animation,
+                     remote.AnimationFrame, remote.AnimationSpeed);
         if (netplayProbe.is_open()) {
           netplayProbe << "{\"schema\":\"triaevum.netplay.probe.v1\","
                           "\"host_frame\":" << frameCount
@@ -728,6 +728,7 @@ bool NativeA32WindowSession::RunFrame() {
                        << ",\"entrance_id\":" << remote.EntranceId
                        << ",\"switch_flags\":" << remote.SwitchFlags
                        << ",\"collectible_flags\":" << remote.CollectibleFlags
+                       << ",\"scene_serial\":" << remote.SceneSerial
                        << ",\"animation\":" << remote.Animation
                        << ",\"animation_frame\":" << remote.AnimationFrame
                        << ",\"animation_speed\":" << remote.AnimationSpeed

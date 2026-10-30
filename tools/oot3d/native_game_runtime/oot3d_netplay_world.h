@@ -39,8 +39,13 @@ private:
   std::uint32_t mTransitionCooldown = 0;
   std::uint16_t mLastScene = 0;
   std::uint32_t mPlay = 0;
+  std::uint32_t mSceneSerial = 0;
+  std::uint32_t mLastRemoteSceneSerial = 0;
+  bool mSceneInitialized = false;
+  bool mSuppressNetworkSceneSerial = false;
   std::int32_t mPendingEntrance = 0;
   std::uint16_t mPendingScene = 0;
+  std::uint32_t mPendingSceneSerial = 0;
 };
 
 } // namespace Oot3dNativeGame

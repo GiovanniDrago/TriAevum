@@ -44,9 +44,10 @@ struct WirePose {
   std::int32_t EntranceId = 0;
   std::uint64_t SwitchFlags = 0;
   std::uint64_t CollectibleFlags = 0;
+  std::uint32_t SceneSerial = 0;
 };
 
-static_assert(sizeof(WirePose) == 80U);
+static_assert(sizeof(WirePose) == 88U);
 
 void SetError(std::string* error, std::string message) {
   if (error != nullptr) *error = std::move(message);
@@ -174,6 +175,7 @@ void NetplaySession::SendPacket(PacketType type, const NetplayPose& pose) {
   packet.EntranceId = pose.EntranceId;
   packet.SwitchFlags = pose.SwitchFlags;
   packet.CollectibleFlags = pose.CollectibleFlags;
+  packet.SceneSerial = pose.SceneSerial;
 
   sockaddr_in peer{};
   peer.sin_family = AF_INET;
@@ -219,6 +221,7 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
     pose.EntranceId = packet.EntranceId;
     pose.SwitchFlags = packet.SwitchFlags;
     pose.CollectibleFlags = packet.CollectibleFlags;
+    pose.SceneSerial = packet.SceneSerial;
     if (!mHasRemote || pose.Sequence >= mRemote.Sequence) {
       mRemote = pose;
       mHasRemote = true;

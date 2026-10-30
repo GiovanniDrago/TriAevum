@@ -74,6 +74,10 @@ void NetplayWorldSync::Reset() {
   mTransitionCooldown = 0;
   mLastScene = 0;
   mPlay = 0;
+  mSceneSerial = 0;
+  mLastRemoteSceneSerial = 0;
+  mSceneInitialized = false;
+  mSuppressNetworkSceneSerial = false;
 }
 
 bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
@@ -82,8 +86,24 @@ bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
   std::uint16_t scene = 0U;
   std::uint8_t room = 0U;
   if (!ReadPlayState(process, &play, &scene, &room)) return false;
-  if (play != mPlay || scene != mLastScene) {
+  if (play != mPlay) {
     mPlay = play;
+    mAppliedCollectible = 0;
+    mTransitionCooldown = 0;
+    mFrame = 0;
+    mSceneFrames = 0;
+  }
+  if (!mSceneInitialized) {
+    mSceneInitialized = true;
+    mLastScene = scene;
+  } else if (scene != mLastScene) {
+    // A scene change initiated by the peer is applied under suppression so it
+    // does not echo back as a new local initiation.
+    if (mSuppressNetworkSceneSerial) {
+      mSuppressNetworkSceneSerial = false;
+    } else if (mSceneSerial != 0xFFFFFFFFU) {
+      ++mSceneSerial;
+    }
     mLastScene = scene;
     mAppliedCollectible = 0;
     mTransitionCooldown = 0;
@@ -93,14 +113,29 @@ bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
   ++mFrame;
   if (mSceneFrames < 0xFFFFFFFFU) ++mSceneFrames;
 
-  if (host) {
-    if (mFrame % kCollectibleQueryInterval == 1U)
-      QueryCollectibleFlags(process, play);
-    return false;
-  }
+  if (host && mFrame % kCollectibleQueryInterval == 1U)
+    QueryCollectibleFlags(process, play);
 
   if (remote == nullptr || remote->SceneId == 0U) return false;
+
+  // Serial 0 is the initial scene on both sides. Never warp merely because
+  // two independently loaded saves start in different places; only a serial
+  // increment means that one player actually changed scene.
+  if (remote->SceneSerial > mLastRemoteSceneSerial) {
+    if (remote->SceneId == scene) {
+      mLastRemoteSceneSerial = remote->SceneSerial;
+    } else if (SceneTransitionEnabled() && mSceneFrames >= 120U &&
+               mTransitionCooldown == 0U && remote->EntranceId > 0 &&
+               remote->EntranceId <= 0xFFFF) {
+      mPendingEntrance = remote->EntranceId;
+      mPendingScene = remote->SceneId;
+      mPendingSceneSerial = remote->SceneSerial;
+      return true;
+    }
+  }
+
   if (remote->SceneId == scene) {
+    mLastRemoteSceneSerial = remote->SceneSerial;
     if (remote->RoomId == room) {
       ApplySwitchFlags(process, play, remote->SwitchFlags);
       ApplyCollectibleFlags(process, play, remote->CollectibleFlags);
@@ -108,30 +143,19 @@ bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
     return false;
   }
 
-  // Automatic scene transitions are fail-closed until the native transition
-  // path is validated with a live second Player actor. The guarded code is
-  // retained for controlled debugging only.
-  if (!SceneTransitionEnabled()) return false;
-
-  // A transition request during scene load/name-entry can accept entrance 0
-  // and leave the guest in a half-built scene. Wait until the local scene has
-  // been stable for two seconds and require a real entrance.
-  if (mSceneFrames < 120U) return false;
   if (mTransitionCooldown != 0U) {
     --mTransitionCooldown;
-    return false;
   }
-  if (remote->EntranceId <= 0 || remote->EntranceId > 0xFFFF) return false;
-  mPendingEntrance = remote->EntranceId;
-  mPendingScene = remote->SceneId;
-  return true;
+  return false;
 }
 
 bool NetplayWorldSync::CommitPendingTransition(NativeA32Process& process) {
   const std::int32_t entrance = mPendingEntrance;
   const std::uint16_t targetScene = mPendingScene;
+  const std::uint32_t targetSerial = mPendingSceneSerial;
   mPendingEntrance = 0;
   mPendingScene = 0;
+  mPendingSceneSerial = 0;
   if (entrance <= 0) return false;
   std::uint32_t play = 0U;
   std::uint16_t scene = 0U;
@@ -161,6 +185,8 @@ bool NetplayWorldSync::CommitPendingTransition(NativeA32Process& process) {
   // transition in a state the renderer cannot finish.
   if (!process.Memory().Write32(kSaveRespawnFlag, 0U)) return false;
   if (RequestTransition(process, play, entrance)) {
+    mLastRemoteSceneSerial = targetSerial;
+    mSuppressNetworkSceneSerial = true;
     mTransitionCooldown = kTransitionCooldownFrames;
     return true;
   }
@@ -176,6 +202,7 @@ void NetplayWorldSync::FillLocalPose(NativeA32Process& process,
   std::uint8_t room = 0U;
   if (!ReadPlayState(process, &play, &scene, &room)) return;
   local->SceneId = scene;
+  local->SceneSerial = mSceneSerial;
   local->SwitchFlags = ReadSwitchFlags(process, play);
   local->CollectibleFlags = mCollectibleFlags;
   std::int32_t entrance = 0;

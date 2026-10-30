@@ -23,6 +23,7 @@ struct NetplayPose {
   std::int32_t EntranceId = 0;
   std::uint64_t SwitchFlags = 0;
   std::uint64_t CollectibleFlags = 0;
+  std::uint32_t SceneSerial = 0;
 };
 
 struct NetplayScreenPoint {

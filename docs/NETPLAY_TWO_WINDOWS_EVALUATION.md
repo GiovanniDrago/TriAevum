@@ -391,8 +391,13 @@ switches from `PlayState +0x2228/+0x222C` and queries the title's
 `Flags_SetCollectible` for newly set bits. The client keeps its own save and
 never writes the host save.
 
-Flags are applied only when scene and room match; a remote peer in another
-room must transition first rather than inheriting that room's switches.
+Scene changes are carried by a monotonic `SceneSerial`: initial load does not
+warp either player merely because two independently loaded saves start in
+different scenes. When either player actually changes scene, its serial
+increments and the other side requests the matching entrance; the resulting
+local scene load suppresses a serial echo. Flags are applied only when scene
+and room match; a remote peer in another room must transition first rather
+than inheriting that room's switches.
 
 Scene transitions are now enabled by default, with a fail-closed guard:
 the entrance table row must match the host's scene and differ from the local
@@ -412,7 +417,7 @@ bits are carried.
 
 - `oot3d_netplay_tests`: protocol loopback, pose/world round-trip,
   same-scene application policy, center/offscreen/behind-camera projection.
-- LLVM coverage for `oot3d_netplay.cpp`: 91.53% lines, 93.75% functions,
+- LLVM coverage for `oot3d_netplay.cpp`: 91.58% lines, 93.75% functions,
   88.94% regions.
 - `oot3d_native_a32_input_tests`: controller path/GUID/serial round-trip and
   legacy config compatibility.
