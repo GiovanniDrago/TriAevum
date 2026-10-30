@@ -621,6 +621,11 @@ bool NativeA32WindowSession::RunFrame() {
         std::uint32_t animationSpeed = 0U;
         std::uint32_t animationStart = 0U;
         std::uint32_t animationEnd = 0U;
+        std::uint32_t morphWeight = 0U;
+        std::uint32_t morphRate = 0U;
+        std::uint8_t animationMode = 0U;
+        std::uint8_t updateMode = 0U;
+        std::uint8_t morphTaper = 0U;
         if (process.Memory().Read32(actor + kPlayerSkelAnime + 0x30U,
                                     &animationIndex) &&
             process.Memory().Read32(actor + kPlayerSkelAnime + 0x3CU,
@@ -630,12 +635,27 @@ bool NativeA32WindowSession::RunFrame() {
             process.Memory().Read32(actor + kPlayerSkelAnime + 0x44U,
                                     &animationStart) &&
             process.Memory().Read32(actor + kPlayerSkelAnime + 0x48U,
-                                    &animationEnd)) {
+                                    &animationEnd) &&
+            process.Memory().Read32(actor + kPlayerSkelAnime + 0x34U,
+                                    &morphWeight) &&
+            process.Memory().Read32(actor + kPlayerSkelAnime + 0x38U,
+                                    &morphRate) &&
+            process.Memory().Read8(actor + kPlayerSkelAnime + 0x50U,
+                                   &morphTaper) &&
+            process.Memory().Read8(actor + kPlayerSkelAnime + 0x70U,
+                                   &animationMode) &&
+            process.Memory().Read8(actor + kPlayerSkelAnime + 0x71U,
+                                   &updateMode)) {
           local.Animation = animationIndex;
           local.AnimationFrame = std::bit_cast<float>(animationFrame);
           local.AnimationSpeed = std::bit_cast<float>(animationSpeed);
           local.AnimationStart = std::bit_cast<float>(animationStart);
           local.AnimationEnd = std::bit_cast<float>(animationEnd);
+          local.AnimationMorphWeight = std::bit_cast<float>(morphWeight);
+          local.AnimationMorphRate = std::bit_cast<float>(morphRate);
+          local.AnimationFlags = static_cast<std::uint32_t>(animationMode) |
+                                 (static_cast<std::uint32_t>(updateMode) << 8U) |
+                                 (static_cast<std::uint32_t>(morphTaper) << 16U);
         }
         const auto sceneSnapshot = sceneViewProbe.Capture(process.Memory());
         if (sceneSnapshot.has_value()) {
@@ -659,6 +679,24 @@ bool NativeA32WindowSession::RunFrame() {
       }
     }
     netplayWorldSync.FillLocalPose(process, &local);
+    // A peer that has just followed a scene transition must not remain in the
+    // void if the native entrance spawned below the world. Once both sides
+    // report the same scene, recover the local Player to the peer's grounded
+    // position instead of falling and triggering another transition.
+    const std::uint32_t playerAddress =
+        playerTimingProbe.Stats().LastPlayerAddress;
+    if (playerAddress != 0U && local.Position[1] < -50.0F &&
+        local.SceneId != 0U && netplayRemotePose.has_value() &&
+        netplayRemotePose->SceneId == local.SceneId &&
+        netplayRemotePose->Position[1] > -10.0F) {
+      for (std::uint32_t axis = 0; axis < 3U; ++axis) {
+        const std::uint32_t bits = std::bit_cast<std::uint32_t>(
+            netplayRemotePose->Position[axis]);
+        (void)process.Memory().Write32(playerAddress + 0x28U + axis * 4U,
+                                       bits);
+      }
+      local.Position = netplayRemotePose->Position;
+    }
     netplaySession.Poll(1.0 / 60.0, local);
     Oot3dNativeGame::NetplayPose remote;
     if (netplaySession.LatestRemotePose(&remote)) {

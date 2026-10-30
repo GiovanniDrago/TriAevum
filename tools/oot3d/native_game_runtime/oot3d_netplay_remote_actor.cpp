@@ -387,6 +387,16 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
       memory.Write32(actor + kPlayerSkelAnime + 0x4CU,
                      std::bit_cast<std::uint32_t>(pose.AnimationEnd -
                                                   pose.AnimationStart));
+      memory.Write32(actor + kPlayerSkelAnime + 0x34U,
+                     std::bit_cast<std::uint32_t>(pose.AnimationMorphWeight));
+      memory.Write32(actor + kPlayerSkelAnime + 0x38U,
+                     std::bit_cast<std::uint32_t>(pose.AnimationMorphRate));
+      memory.Write8(actor + kPlayerSkelAnime + 0x50U,
+                    static_cast<std::uint8_t>(pose.AnimationFlags >> 16U));
+      memory.Write8(actor + kPlayerSkelAnime + 0x70U,
+                    static_cast<std::uint8_t>(pose.AnimationFlags));
+      memory.Write8(actor + kPlayerSkelAnime + 0x71U,
+                    static_cast<std::uint8_t>(pose.AnimationFlags >> 8U));
     } else if (haveLocalAnimation) {
       // Compatibility fallback for peers that do not yet stream animation.
       std::array<std::uint8_t, 12> remoteBuffers{};
