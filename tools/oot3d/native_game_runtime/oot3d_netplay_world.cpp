@@ -135,6 +135,13 @@ bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
   }
 
   if (remote->SceneId == scene) {
+    // Both sides have reached the same scene: establish a common post-join
+    // epoch so resource synchronization can start without changing scenes.
+    if (mSceneSerial == 0U && remote->SceneSerial == 0U) {
+      mSceneSerial = 1U;
+    } else if (remote->SceneSerial > mSceneSerial) {
+      mSceneSerial = remote->SceneSerial;
+    }
     mLastRemoteSceneSerial = remote->SceneSerial;
     if (remote->RoomId == room) {
       ApplySwitchFlags(process, play, remote->SwitchFlags);
