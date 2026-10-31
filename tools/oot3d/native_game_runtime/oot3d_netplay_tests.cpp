@@ -122,6 +122,24 @@ int main() {
           "client received the wrong host pose");
   Require(hostSees.Sequence != 0U && clientSees.Sequence != 0U,
           "pose sequence was not transported");
+  Oot3dNativeGame::NetplayPose sceneRequest;
+  sceneRequest.SceneId = 0x77U;
+  sceneRequest.RoomId = 3U;
+  sceneRequest.EntranceId = 0x00CD;
+  sceneRequest.SceneSerial = 4U;
+  client.RequestSceneChange(sceneRequest);
+  Oot3dNativeGame::NetplayPose hostIdle;
+  for (int i = 0; i < 8; ++i) {
+    host.Poll(1.0 / 60.0, hostIdle);
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  Oot3dNativeGame::NetplayPose receivedRequest;
+  Require(host.TakeRemoteSceneChange(&receivedRequest) &&
+              receivedRequest.SceneId == 0x77U &&
+              receivedRequest.RoomId == 3U &&
+              receivedRequest.EntranceId == 0x00CD &&
+              receivedRequest.SceneSerial == 4U,
+          "scene request was not transported");
   Oot3dNativeGame::NetplayPose localWorld;
   localWorld.SceneId = 0x55U;
   Oot3dNativeGame::NetplayPose remoteWorld;

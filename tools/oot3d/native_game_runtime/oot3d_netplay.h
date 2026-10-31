@@ -91,10 +91,12 @@ public:
   // Called once per host frame. Sends the local pose at a bounded rate and
   // consumes all pending datagrams.
   void Poll(double seconds, const NetplayPose& local);
+  void RequestSceneChange(const NetplayPose& pose);
+  [[nodiscard]] bool TakeRemoteSceneChange(NetplayPose* pose);
   [[nodiscard]] bool LatestRemotePose(NetplayPose* pose) const noexcept;
 
 private:
-  enum class PacketType : std::uint8_t { Hello = 1, HelloAck = 2, State = 3, Bye = 4 };
+  enum class PacketType : std::uint8_t { Hello = 1, HelloAck = 2, State = 3, Bye = 4, SceneRequest = 5 };
 
   void SendPacket(PacketType type, const NetplayPose& pose);
   void ConsumePacket(const std::uint8_t* bytes, std::size_t size);
@@ -112,6 +114,8 @@ private:
   double mElapsedSeconds = 0.0;
   NetplayPose mRemote;
   bool mHasRemote = false;
+  NetplayPose mRemoteSceneRequest;
+  bool mHasRemoteSceneRequest = false;
 };
 
 } // namespace Oot3dNativeGame

@@ -3,6 +3,7 @@
 #include "oot3d_netplay.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace Oot3dNativeGame {
 
@@ -21,6 +22,8 @@ public:
                                  const NetplayPose* remote);
   bool CommitPendingTransition(NativeA32Process& process);
   void FillLocalPose(NativeA32Process& process, NetplayPose* local) const;
+  void QueueRemoteSceneChange(const NetplayPose& pose);
+  bool TakeLocalSceneChange(NetplayPose* pose);
   void Reset();
 
 private:
@@ -43,6 +46,11 @@ private:
   std::uint32_t mLastRemoteSceneSerial = 0;
   bool mSceneInitialized = false;
   bool mSuppressNetworkSceneSerial = false;
+  bool mRemoteSceneInitialized = false;
+  std::uint16_t mLastRemoteScene = 0;
+  bool mLocalSceneChangePending = false;
+  std::optional<NetplayPose> mLocalSceneChange;
+  std::optional<NetplayPose> mRequestedRemoteScene;
   std::int32_t mPendingEntrance = 0;
   std::uint16_t mPendingScene = 0;
   std::uint32_t mPendingSceneSerial = 0;

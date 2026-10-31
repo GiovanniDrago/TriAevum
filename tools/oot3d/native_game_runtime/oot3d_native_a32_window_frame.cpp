@@ -1473,9 +1473,19 @@ void NativeA32WindowSession::RunGuestRefresh() {
   } else {
     netplayRemoteActor.SetRemotePose(nullptr);
   }
+  if (netplaySession.Options().Host) {
+    Oot3dNativeGame::NetplayPose requestedScene;
+    if (netplaySession.TakeRemoteSceneChange(&requestedScene))
+      netplayWorldSync.QueueRemoteSceneChange(requestedScene);
+  }
   const bool netplaySceneTransition = netplayWorldSync.BeforeGuest(
       process, netplaySession.Options().Host,
       netplayRemotePose.has_value() ? &*netplayRemotePose : nullptr);
+  if (!netplaySession.Options().Host) {
+    Oot3dNativeGame::NetplayPose localSceneChange;
+    if (netplayWorldSync.TakeLocalSceneChange(&localSceneChange))
+      netplaySession.RequestSceneChange(localSceneChange);
+  }
   if (netplaySceneTransition) {
     netplayRemoteActor.PrepareSceneTransition(process);
     netplayWorldSync.CommitPendingTransition(process);

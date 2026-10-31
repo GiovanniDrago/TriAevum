@@ -392,11 +392,11 @@ switches from `PlayState +0x2228/+0x222C` and queries the title's
 `Flags_SetCollectible` for newly set bits. The client keeps its own save and
 never writes the host save.
 
-Scene changes are carried by a monotonic `SceneSerial`: initial load does not
-warp either player merely because two independently loaded saves start in
-different scenes. When either player actually changes scene, its serial
-increments and the other side requests the matching entrance; the resulting
-local scene load adopts the peer epoch and suppresses a serial echo. Health,
+Initial load does not warp either player merely because two independently
+loaded saves start in different scenes. A client-originated scene change sends
+an explicit SceneRequest to the host; a host-originated change is observed as a
+remote scene-id change. The follower requests the matching entrance, adopts the
+peer scene epoch and suppresses a serial echo. Health,
 wallet and clock are only copied after a synchronized scene change, preventing
 an initial join from overwriting the host's rupees. If a followed scene
 spawns the local Player below the world while the peer is grounded in the same
@@ -423,8 +423,8 @@ bits are carried.
 
 - `oot3d_netplay_tests`: protocol loopback, pose/world round-trip,
   same-scene application policy, center/offscreen/behind-camera projection.
-- LLVM coverage for `oot3d_netplay.cpp`: 91.86% lines, 94.12% functions,
-  89.22% regions.
+- LLVM coverage for `oot3d_netplay.cpp`: 92.51% lines, 94.74% functions,
+  89.50% regions.
 - `oot3d_native_a32_input_tests`: controller path/GUID/serial round-trip and
   legacy config compatibility.
 - `three_ds_sdl_controller_tests`: SDL selection and device behavior.

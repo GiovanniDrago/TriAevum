@@ -139,6 +139,8 @@ void NetplaySession::Stop() {
   mPeerPort = 0;
   mPeerAddress = {};
   mHasRemote = false;
+  mRemoteSceneRequest = {};
+  mHasRemoteSceneRequest = false;
 }
 
 bool NetplaySession::Connected() const noexcept {
@@ -209,6 +211,19 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
     mAcknowledged = true;
   } else if (type == PacketType::HelloAck) {
     if (!mOptions.Host) mAcknowledged = true;
+  } else if (type == PacketType::SceneRequest) {
+    if (mOptions.Host) {
+      NetplayPose pose;
+      pose.Sequence = packet.Sequence;
+      pose.Position = {packet.X, packet.Y, packet.Z};
+      pose.Yaw = packet.Yaw;
+      pose.SceneId = packet.SceneId;
+      pose.RoomId = packet.RoomId;
+      pose.EntranceId = packet.EntranceId;
+      pose.SceneSerial = packet.SceneSerial;
+      mRemoteSceneRequest = pose;
+      mHasRemoteSceneRequest = true;
+    }
   } else if (type == PacketType::State) {
     NetplayPose pose;
     pose.Sequence = packet.Sequence;
@@ -238,6 +253,20 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
     mLastReceiveSeconds = mElapsedSeconds;
     if (!mOptions.Host) mAcknowledged = true;
   }
+}
+
+void NetplaySession::RequestSceneChange(const NetplayPose& pose) {
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    SendPacket(PacketType::SceneRequest, pose);
+  }
+}
+
+bool NetplaySession::TakeRemoteSceneChange(NetplayPose* pose) {
+  if (!mHasRemoteSceneRequest) return false;
+  if (pose != nullptr) *pose = mRemoteSceneRequest;
+  mHasRemoteSceneRequest = false;
+  mRemoteSceneRequest = {};
+  return true;
 }
 
 void NetplaySession::Poll(double seconds, const NetplayPose& local) {

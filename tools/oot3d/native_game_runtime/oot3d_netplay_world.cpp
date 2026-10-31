@@ -78,6 +78,11 @@ void NetplayWorldSync::Reset() {
   mLastRemoteSceneSerial = 0;
   mSceneInitialized = false;
   mSuppressNetworkSceneSerial = false;
+  mRemoteSceneInitialized = false;
+  mLastRemoteScene = 0;
+  mLocalSceneChangePending = false;
+  mLocalSceneChange.reset();
+  mRequestedRemoteScene.reset();
 }
 
 bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
@@ -93,17 +98,31 @@ bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
     mFrame = 0;
     mSceneFrames = 0;
   }
+  bool localSceneChanged = false;
   if (!mSceneInitialized) {
     mSceneInitialized = true;
     mLastScene = scene;
   } else if (scene != mLastScene) {
+    const bool wasStable = mSceneFrames >= 120U;
     // A scene change initiated by the peer is applied under suppression so it
     // does not echo back as a new local initiation.
     if (mSuppressNetworkSceneSerial) {
       mSuppressNetworkSceneSerial = false;
-    } else if (mSceneSerial != 0xFFFFFFFFU) {
-      ++mSceneSerial;
+    } else {
+      if (mSceneSerial != 0xFFFFFFFFU) ++mSceneSerial;
+      if (wasStable && mRemoteSceneInitialized) {
+        NetplayPose request;
+        request.SceneId = scene;
+        request.RoomId = room;
+        std::int32_t entrance = 0;
+        if (process.Memory().Read32(kSaveEntrance,
+                                    reinterpret_cast<std::uint32_t*>(&entrance)))
+          request.EntranceId = entrance;
+        mLocalSceneChange = request;
+        mLocalSceneChangePending = true;
+      }
     }
+    localSceneChanged = true;
     mLastScene = scene;
     mAppliedCollectible = 0;
     mTransitionCooldown = 0;
@@ -118,17 +137,38 @@ bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
 
   if (remote == nullptr || remote->SceneId == 0U) return false;
 
-  // Serial 0 is the initial scene on both sides. Never warp merely because
-  // two independently loaded saves start in different places; only a serial
-  // increment means that one player actually changed scene.
-  if (remote->SceneSerial > mLastRemoteSceneSerial) {
-    if (remote->SceneId == scene) {
-      mLastRemoteSceneSerial = remote->SceneSerial;
-    } else if (SceneTransitionEnabled() && mSceneFrames >= 120U &&
-               mTransitionCooldown == 0U && remote->EntranceId > 0 &&
-               remote->EntranceId <= 0xFFFF) {
+  // A client-originated scene change arrives as an explicit request and is
+  // handled on the host even before the host's scene id changes.
+  if (mRequestedRemoteScene.has_value() &&
+      mRequestedRemoteScene->SceneId != scene &&
+      SceneTransitionEnabled() && mSceneFrames >= 120U &&
+      mTransitionCooldown == 0U && mRequestedRemoteScene->EntranceId > 0 &&
+      mRequestedRemoteScene->EntranceId <= 0xFFFF) {
+    mPendingEntrance = mRequestedRemoteScene->EntranceId;
+    mPendingScene = mRequestedRemoteScene->SceneId;
+    mPendingSceneSerial = mRequestedRemoteScene->SceneSerial;
+    mLastRemoteScene = mRequestedRemoteScene->SceneId;
+    mLastRemoteSceneSerial = mRequestedRemoteScene->SceneSerial;
+    mRequestedRemoteScene.reset();
+    return true;
+  }
+
+  // Baseline the first observed peer scene. Only a subsequent scene-id change
+  // is an actual transition; two independently loaded different saves must not
+  // warp at startup.
+  if (!mRemoteSceneInitialized) {
+    mRemoteSceneInitialized = true;
+    mLastRemoteScene = remote->SceneId;
+    mLastRemoteSceneSerial = remote->SceneSerial;
+  } else if (remote->SceneId != mLastRemoteScene) {
+    const std::uint16_t changedScene = remote->SceneId;
+    mLastRemoteScene = changedScene;
+    mLastRemoteSceneSerial = remote->SceneSerial;
+    if (changedScene != scene && SceneTransitionEnabled() &&
+        mSceneFrames >= 120U && mTransitionCooldown == 0U &&
+        remote->EntranceId > 0 && remote->EntranceId <= 0xFFFF) {
       mPendingEntrance = remote->EntranceId;
-      mPendingScene = remote->SceneId;
+      mPendingScene = changedScene;
       mPendingSceneSerial = remote->SceneSerial;
       return true;
     }
@@ -154,6 +194,18 @@ bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
     --mTransitionCooldown;
   }
   return false;
+}
+
+void NetplayWorldSync::QueueRemoteSceneChange(const NetplayPose& pose) {
+  if (pose.SceneId != 0U) mRequestedRemoteScene = pose;
+}
+
+bool NetplayWorldSync::TakeLocalSceneChange(NetplayPose* pose) {
+  if (!mLocalSceneChangePending) return false;
+  if (pose != nullptr) *pose = mLocalSceneChange.value_or(NetplayPose{});
+  mLocalSceneChangePending = false;
+  mLocalSceneChange.reset();
+  return true;
 }
 
 bool NetplayWorldSync::CommitPendingTransition(NativeA32Process& process) {
@@ -193,6 +245,9 @@ bool NetplayWorldSync::CommitPendingTransition(NativeA32Process& process) {
   if (!process.Memory().Write32(kSaveRespawnFlag, 0U)) return false;
   if (RequestTransition(process, play, entrance)) {
     mLastRemoteSceneSerial = targetSerial;
+    mLastRemoteScene = targetScene;
+    mRequestedRemoteScene.reset();
+    mRemoteSceneInitialized = true;
     mSuppressNetworkSceneSerial = true;
     mTransitionCooldown = kTransitionCooldownFrames;
     return true;
