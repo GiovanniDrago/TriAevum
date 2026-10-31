@@ -18,6 +18,8 @@ struct NetplayPose {
   float AnimationMorphWeight = 0.0F;
   float AnimationMorphRate = 0.0F;
   std::uint32_t AnimationFlags = 0;
+  std::array<std::uint8_t, 0x84> AnimationState{};
+  std::uint8_t AnimationStateValid = 0;
   std::uint16_t SceneId = 0;
   std::uint16_t RoomId = 0;
   std::uint16_t DayTime = 0;

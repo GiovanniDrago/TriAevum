@@ -38,6 +38,8 @@ struct WirePose {
   float AnimationMorphWeight = 0.0F;
   float AnimationMorphRate = 0.0F;
   std::uint32_t AnimationFlags = 0;
+  std::array<std::uint8_t, 0x84> AnimationState{};
+  std::uint8_t AnimationStateValid = 0;
   std::uint16_t SceneId = 0;
   std::uint16_t RoomId = 0;
   std::uint16_t DayTime = 0;
@@ -50,7 +52,7 @@ struct WirePose {
   std::uint32_t SceneSerial = 0;
 };
 
-static_assert(sizeof(WirePose) == 104U);
+static_assert(sizeof(WirePose) == 240U);
 
 void SetError(std::string* error, std::string message) {
   if (error != nullptr) *error = std::move(message);
@@ -175,6 +177,8 @@ void NetplaySession::SendPacket(PacketType type, const NetplayPose& pose) {
   packet.AnimationMorphWeight = pose.AnimationMorphWeight;
   packet.AnimationMorphRate = pose.AnimationMorphRate;
   packet.AnimationFlags = pose.AnimationFlags;
+  packet.AnimationState = pose.AnimationState;
+  packet.AnimationStateValid = pose.AnimationStateValid;
   packet.SceneId = pose.SceneId;
   packet.RoomId = pose.RoomId;
   packet.DayTime = pose.DayTime;
@@ -237,6 +241,8 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
     pose.AnimationMorphWeight = packet.AnimationMorphWeight;
     pose.AnimationMorphRate = packet.AnimationMorphRate;
     pose.AnimationFlags = packet.AnimationFlags;
+    pose.AnimationState = packet.AnimationState;
+    pose.AnimationStateValid = packet.AnimationStateValid;
     pose.SceneId = packet.SceneId;
     pose.RoomId = packet.RoomId;
     pose.DayTime = packet.DayTime;
@@ -275,7 +281,7 @@ void NetplaySession::Poll(double seconds, const NetplayPose& local) {
   mElapsedSeconds += seconds;
   mSendAccumulator += seconds;
 
-  std::array<std::uint8_t, 128> buffer{};
+  std::array<std::uint8_t, 512> buffer{};
   for (;;) {
     sockaddr_in sender{};
     socklen_t senderSize = sizeof(sender);

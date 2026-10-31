@@ -345,6 +345,29 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
     std::array<std::uint8_t, kSkelAnimeSize> animation{};
     const bool haveLocalAnimation =
         memory.ReadBytes(localPlayer + kPlayerSkelAnime, animation);
+    if (pose.AnimationStateValid != 0U) {
+      std::array<std::uint8_t, kSkelAnimeSize> remoteState{};
+      if (memory.ReadBytes(actor + kPlayerSkelAnime, remoteState)) {
+        (void)memory.WriteBytes(actor + kPlayerSkelAnime,
+                                std::span<const std::uint8_t>(
+                                    pose.AnimationState.data(),
+                                    pose.AnimationState.size()));
+        // Restore pointers owned by the remote actor or by its model context.
+        (void)memory.WriteBytes(actor + kPlayerSkelAnime + 0x00U,
+                                std::span<const std::uint8_t>(remoteState.data(), 4));
+        (void)memory.WriteBytes(actor + kPlayerSkelAnime + 0x08U,
+                                std::span<const std::uint8_t>(remoteState.data() + 0x08U, 0x18U));
+        (void)memory.WriteBytes(actor + kPlayerSkelAnime + 0x20U,
+                                std::span<const std::uint8_t>(remoteState.data() + 0x20U, 4));
+        (void)memory.WriteBytes(actor + kPlayerSkelAnime + 0x28U,
+                                std::span<const std::uint8_t>(remoteState.data() + 0x28U, 4));
+        (void)memory.WriteBytes(actor + kPlayerSkelAnime + 0x78U,
+                                std::span<const std::uint8_t>(remoteState.data() + 0x78U, 4));
+        (void)memory.WriteBytes(actor + kPlayerSkelAnime + 0x7CU,
+                                std::span<const std::uint8_t>(remoteState.data() + 0x7CU, 4));
+        mAnimationInitialized = true;
+      }
+    }
     if (haveLocalAnimation && !mAnimationInitialized) {
       // Preserve the remote actor's own model and pose buffers. Copying the
       // local pointers would make a remote SkelAnime update overwrite the

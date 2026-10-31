@@ -363,9 +363,9 @@ the guest-owned actor in `oot3d_netplay_remote_actor.cpp`:
 - its update callback is replaced with the title's no-op immediately; the
   draw callback and object slot are inherited from the local Player;
 - the host runtime writes world position, home position and yaw;
-- the pose packet carries the peer's animation index, frame, speed, frame
-  range, morph weight/rate and animation mode, and remote position/yaw are
-  interpolated between snapshots;
+- the pose packet carries the full non-owning SkelAnime state alongside the
+  animation index/frame/speed/range and morph/mode fields; remote
+  position/yaw are interpolated between snapshots;
 - the remote keeps its own model/joint buffers and applies those streamed
   fields, then runs the native `SkelAnime_Update`; if an older peer sends no
   range, the local Player's SkelAnime is mirrored as a compatibility fallback;
@@ -396,7 +396,8 @@ Initial load does not warp either player merely because two independently
 loaded saves start in different scenes. A client-originated scene change sends
 an explicit SceneRequest to the host; a host-originated change is observed as a
 remote scene-id change. The follower requests the matching entrance, adopts the
-peer scene epoch and suppresses a serial echo. Health,
+peer scene epoch and suppresses a serial echo. The first peer scene is
+baselined so startup/title scenes do not trigger a warp. Health,
 wallet and clock are only copied after a synchronized scene change, preventing
 an initial join from overwriting the host's rupees. If a followed scene
 spawns the local Player below the world while the peer is grounded in the same
@@ -423,7 +424,7 @@ bits are carried.
 
 - `oot3d_netplay_tests`: protocol loopback, pose/world round-trip,
   same-scene application policy, center/offscreen/behind-camera projection.
-- LLVM coverage for `oot3d_netplay.cpp`: 92.51% lines, 94.74% functions,
+- LLVM coverage for `oot3d_netplay.cpp`: 92.60% lines, 94.74% functions,
   89.50% regions.
 - `oot3d_native_a32_input_tests`: controller path/GUID/serial round-trip and
   legacy config compatibility.

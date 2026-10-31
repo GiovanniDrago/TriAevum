@@ -656,6 +656,11 @@ bool NativeA32WindowSession::RunFrame() {
           local.AnimationFlags = static_cast<std::uint32_t>(animationMode) |
                                  (static_cast<std::uint32_t>(updateMode) << 8U) |
                                  (static_cast<std::uint32_t>(morphTaper) << 16U);
+          local.AnimationStateValid = process.Memory().ReadBytes(
+              actor + kPlayerSkelAnime, std::span<std::uint8_t>(
+                  local.AnimationState.data(), local.AnimationState.size()))
+              ? 1U
+              : 0U;
         }
         const auto sceneSnapshot = sceneViewProbe.Capture(process.Memory());
         if (sceneSnapshot.has_value()) {
