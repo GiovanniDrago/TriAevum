@@ -441,9 +441,10 @@ bits are carried.
 
 - `oot3d_netplay_tests`: protocol loopback, pose/world round-trip, remote
   equipment/action fields, the 25-limb matrix tail, same-scene application
-  policy, timeout/rejoin admission, center/offscreen/behind-camera projection.
-- LLVM coverage for `oot3d_netplay.cpp`: 86.00% lines, 95.45% functions,
-  83.39% regions (the new datagram split adds defensive branches).
+  policy, timeout/rejoin admission (including a real host timeout and
+  re-admission), center/offscreen/behind-camera projection.
+- LLVM coverage for `oot3d_netplay.cpp`: 86.53% lines, 95.45% functions,
+  83.73% regions (the new datagram split adds defensive branches).
 - `oot3d_native_a32_input_tests`: controller path/GUID/serial round-trip and
   legacy config compatibility.
 - `three_ds_sdl_controller_tests`: SDL selection and device behavior.

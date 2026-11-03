@@ -164,6 +164,20 @@ int main() {
               clientSees.StateFlags == 0x11112222U &&
               clientSees.SecondaryStateFlags == 0x33334444U,
           "client received the wrong host pose");
+  // A host that stops receiving for longer than the timeout forgets its
+  // discovered peer, then admits the next State/Hello without a restart.
+  Oot3dNativeGame::NetplayPose keepAlive;
+  keepAlive.Position = {1.0F, 2.0F, 3.0F};
+  keepAlive.SceneId = 0x55U;
+  for (int i = 0; i < 300; ++i) {
+    host.Poll(1.0 / 60.0, keepAlive);
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  Require(!host.Connected(), "host did not time out an absent peer");
+  Pump(host, client, 120);
+  Require(host.Connected() && client.Connected(),
+          "loopback sessions did not rejoin after a timeout");
+
   Require(hostSees.Sequence != 0U && clientSees.Sequence != 0U,
           "pose sequence was not transported");
   Oot3dNativeGame::NetplayPose sceneRequest;
