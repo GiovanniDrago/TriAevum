@@ -661,6 +661,24 @@ bool NativeA32WindowSession::RunFrame() {
                   local.AnimationState.data(), local.AnimationState.size()))
               ? 1U
               : 0U;
+          std::uint8_t boots = 0U;
+          std::int8_t heldItem = 0;
+          std::int8_t itemAction = 0;
+          std::uint32_t stateFlags = 0U;
+          std::uint32_t secondaryFlags = 0U;
+          if (process.Memory().Read8(actor + 0x1A7U, &boots) &&
+              process.Memory().Read8(actor + 0x1A9U,
+                                     reinterpret_cast<std::uint8_t*>(&heldItem)) &&
+              process.Memory().Read8(actor + 0x1ACU,
+                                     reinterpret_cast<std::uint8_t*>(&itemAction)) &&
+              process.Memory().Read32(actor + 0x1710U, &stateFlags) &&
+              process.Memory().Read32(actor + 0x1714U, &secondaryFlags)) {
+            local.CurrentBoots = boots;
+            local.HeldItemAction = heldItem;
+            local.ItemAction = itemAction;
+            local.StateFlags = stateFlags;
+            local.SecondaryStateFlags = secondaryFlags;
+          }
           std::uint8_t limbCount = 0U;
           std::uint32_t jointMatrices = 0U;
           if (process.Memory().Read8(actor + kPlayerSkelAnime + 0x74U,

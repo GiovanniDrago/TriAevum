@@ -59,6 +59,11 @@ struct WirePose {
   std::uint32_t AnimationFlags = 0;
   std::array<std::uint8_t, 0x84> AnimationState{};
   std::uint8_t AnimationStateValid = 0;
+  std::uint8_t CurrentBoots = 0;
+  std::int8_t HeldItemAction = 0;
+  std::int8_t ItemAction = 0;
+  std::uint32_t StateFlags = 0;
+  std::uint32_t SecondaryStateFlags = 0;
   std::array<std::uint8_t, kWireJointMatrixBytes> JointMatrices{};
   std::uint8_t JointMatrixLimbCount = 0;
   std::uint8_t JointMatricesValid = 0;
@@ -74,7 +79,7 @@ struct WirePose {
   std::uint32_t SceneSerial = 0;
 };
 
-static_assert(sizeof(WirePose) == 1280U);
+static_assert(sizeof(WirePose) == 1288U);
 
 void SetError(std::string* error, std::string message) {
   if (error != nullptr) *error = std::move(message);
@@ -208,6 +213,11 @@ void NetplaySession::SendPacket(PacketType type, const NetplayPose& pose) {
   packet.AnimationFlags = pose.AnimationFlags;
   packet.AnimationState = pose.AnimationState;
   packet.AnimationStateValid = pose.AnimationStateValid;
+  packet.CurrentBoots = pose.CurrentBoots;
+  packet.HeldItemAction = pose.HeldItemAction;
+  packet.ItemAction = pose.ItemAction;
+  packet.StateFlags = pose.StateFlags;
+  packet.SecondaryStateFlags = pose.SecondaryStateFlags;
   const std::size_t wireLimbs = std::min<std::size_t>(
       pose.JointMatrixLimbCount, kWireJointMatrixLimbs);
   std::copy_n(pose.JointMatrices.begin(), wireLimbs * 0x34U,
@@ -370,6 +380,11 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
     pose.AnimationFlags = packet.AnimationFlags;
     pose.AnimationState = packet.AnimationState;
     pose.AnimationStateValid = packet.AnimationStateValid;
+    pose.CurrentBoots = packet.CurrentBoots;
+    pose.HeldItemAction = packet.HeldItemAction;
+    pose.ItemAction = packet.ItemAction;
+    pose.StateFlags = packet.StateFlags;
+    pose.SecondaryStateFlags = packet.SecondaryStateFlags;
     std::copy_n(packet.JointMatrices.begin(),
                 static_cast<std::size_t>(packet.JointMatrixLimbCount) * 0x34U,
                 pose.JointMatrices.begin());

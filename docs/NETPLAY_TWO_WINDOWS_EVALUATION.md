@@ -369,6 +369,9 @@ the guest-owned actor in `oot3d_netplay_remote_actor.cpp`:
 - the pose packet carries the full non-owning SkelAnime state alongside the
   animation index/frame/speed/range and morph/mode fields; remote
   position/yaw are interpolated between snapshots;
+- the pose also carries the remote visual/action fields `Player_Draw` reads:
+  current boots, held-item action, item action, `StateFlags` and
+  `SecondaryStateFlags`; they are written only to the no-update puppet;
 - the host also reads its final, already blended 25-limb joint matrices. They
   travel as the first 20 limbs in the State datagram plus a small `JointTail`
   datagram, keeping each UDP payload under the 1500-byte MTU. The remote copies
@@ -436,9 +439,9 @@ bits are carried.
 
 ### Verification
 
-- `oot3d_netplay_tests`: protocol loopback, pose/world round-trip, the
-  25-limb matrix tail, same-scene application policy, timeout/rejoin
-  admission, center/offscreen/behind-camera projection.
+- `oot3d_netplay_tests`: protocol loopback, pose/world round-trip, remote
+  equipment/action fields, the 25-limb matrix tail, same-scene application
+  policy, timeout/rejoin admission, center/offscreen/behind-camera projection.
 - LLVM coverage for `oot3d_netplay.cpp`: 86.00% lines, 95.45% functions,
   83.39% regions (the new datagram split adds defensive branches).
 - `oot3d_native_a32_input_tests`: controller path/GUID/serial round-trip and

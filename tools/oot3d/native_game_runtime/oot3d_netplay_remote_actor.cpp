@@ -407,6 +407,16 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
                  static_cast<std::uint16_t>(yaw));
   memory.Write16(actor + kActorShapeRot + 2U,
                  static_cast<std::uint16_t>(yaw));
+  // Visual-only Player state for the remote model: boots, held item and the
+  // flags Player_Draw uses for equipment/pose selection. The remote update
+  // callback remains a no-op, so these fields cannot drive local gameplay.
+  memory.Write8(actor + 0x1A7U, pose.CurrentBoots);
+  memory.Write8(actor + 0x1A9U,
+                static_cast<std::uint8_t>(pose.HeldItemAction));
+  memory.Write8(actor + 0x1ACU,
+                static_cast<std::uint8_t>(pose.ItemAction));
+  memory.Write32(actor + 0x1710U, pose.StateFlags);
+  memory.Write32(actor + 0x1714U, pose.SecondaryStateFlags);
   // The remote actor has no update callback, so its own SkelAnime never
   // advances. Initialize its animation resources from the local Player once,
   // then apply the peer's streamed index/frame range and advance the remote

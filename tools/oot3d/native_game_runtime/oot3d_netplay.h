@@ -20,6 +20,12 @@ struct NetplayPose {
   std::uint32_t AnimationFlags = 0;
   std::array<std::uint8_t, 0x84> AnimationState{};
   std::uint8_t AnimationStateValid = 0;
+  // Remote visual/action state used by Player_Draw (boots, held item, action).
+  std::uint8_t CurrentBoots = 0;
+  std::int8_t HeldItemAction = 0;
+  std::int8_t ItemAction = 0;
+  std::uint32_t StateFlags = 0;
+  std::uint32_t SecondaryStateFlags = 0;
   // The host's final, already blended joint matrices. 0x34 bytes per limb,
   // same layout the guest's SkelAnime_Draw consumes. Sending them makes the
   // remote pose independent of the remote actor's animation update mode.
