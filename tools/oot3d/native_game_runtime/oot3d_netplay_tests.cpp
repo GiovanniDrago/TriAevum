@@ -40,6 +40,10 @@ void Pump(Oot3dNativeGame::NetplaySession& host,
   hostPose.SceneSerial = 9U;
   hostPose.AnimationState[0] = 0x42U;
   hostPose.AnimationStateValid = 1U;
+  hostPose.JointMatrices[0] = 0x5AU;
+  hostPose.JointMatrices[20U * 0x34U] = 0x5BU;
+  hostPose.JointMatrixLimbCount = 25U;
+  hostPose.JointMatricesValid = 1U;
   Oot3dNativeGame::NetplayPose clientPose;
   clientPose.Position = {-4.0F, 5.0F, 6.0F};
   clientPose.Yaw = -0.25F;
@@ -59,6 +63,10 @@ void Pump(Oot3dNativeGame::NetplaySession& host,
   clientPose.SceneSerial = 7U;
   clientPose.AnimationState[0] = 0x24U;
   clientPose.AnimationStateValid = 1U;
+  clientPose.JointMatrices[0] = 0xA5U;
+  clientPose.JointMatrices[20U * 0x34U] = 0xA6U;
+  clientPose.JointMatrixLimbCount = 25U;
+  clientPose.JointMatricesValid = 1U;
   for (int i = 0; i < iterations; ++i) {
     host.Poll(1.0 / 60.0, hostPose);
     client.Poll(1.0 / 60.0, clientPose);
@@ -109,7 +117,11 @@ int main() {
               hostSees.CollectibleFlags == 0x8877665544332211ULL &&
               hostSees.SceneSerial == 7U &&
               hostSees.AnimationStateValid == 1U &&
-              hostSees.AnimationState[0] == 0x24U,
+              hostSees.AnimationState[0] == 0x24U &&
+              hostSees.JointMatricesValid == 1U &&
+              hostSees.JointMatrixLimbCount == 25U &&
+              hostSees.JointMatrices[0] == 0xA5U &&
+              hostSees.JointMatrices[20U * 0x34U] == 0xA6U,
           "host received the wrong client pose");
   Require(clientSees.Position[0] == 1.0F && clientSees.Position[1] == 2.0F &&
               clientSees.Position[2] == 3.0F && clientSees.Yaw == 0.5F &&
@@ -126,7 +138,11 @@ int main() {
               clientSees.CollectibleFlags == 0x0807060504030201ULL &&
               clientSees.SceneSerial == 9U &&
               clientSees.AnimationStateValid == 1U &&
-              clientSees.AnimationState[0] == 0x42U,
+              clientSees.AnimationState[0] == 0x42U &&
+              clientSees.JointMatricesValid == 1U &&
+              clientSees.JointMatrixLimbCount == 25U &&
+              clientSees.JointMatrices[0] == 0x5AU &&
+              clientSees.JointMatrices[20U * 0x34U] == 0x5BU,
           "client received the wrong host pose");
   Require(hostSees.Sequence != 0U && clientSees.Sequence != 0U,
           "pose sequence was not transported");

@@ -661,6 +661,30 @@ bool NativeA32WindowSession::RunFrame() {
                   local.AnimationState.data(), local.AnimationState.size()))
               ? 1U
               : 0U;
+          std::uint8_t limbCount = 0U;
+          std::uint32_t jointMatrices = 0U;
+          if (process.Memory().Read8(actor + kPlayerSkelAnime + 0x74U,
+                                     &limbCount) &&
+              process.Memory().Read32(actor + kPlayerSkelAnime + 0x78U,
+                                      &jointMatrices) &&
+              jointMatrices != 0U) {
+            if (limbCount == 0U) {
+              // Older/partial Player init states leave the explicit limb byte
+              // unset while the model's joint buffer is already live. The
+              // native Link skeleton has 25 limbs; use that as the fallback.
+              limbCount = 25U;
+            }
+            if (static_cast<std::size_t>(limbCount) * 0x34U <=
+                    local.JointMatrices.size() &&
+                process.Memory().ReadBytes(
+                    jointMatrices,
+                    std::span<std::uint8_t>(
+                        local.JointMatrices.data(),
+                        static_cast<std::size_t>(limbCount) * 0x34U))) {
+              local.JointMatrixLimbCount = limbCount;
+              local.JointMatricesValid = 1U;
+            }
+          }
         }
         const auto sceneSnapshot = sceneViewProbe.Capture(process.Memory());
         if (sceneSnapshot.has_value()) {
@@ -737,21 +761,27 @@ bool NativeA32WindowSession::RunFrame() {
         std::fprintf(stderr,
                      "TRIAEVUM_NETPLAY connected=%d local=%u local_pos=(%.2f,%.2f,%.2f) "
                      "remote=(%.2f,%.2f,%.2f) yaw=%.2f seq=%u "
-                     "scene=%u local_room=%u room=%u day=0x%04X health=0x%04X wallet=%u "
+                     "scene=%u local_scene=%u local_room=%u room=%u day=0x%04X health=0x%04X wallet=%u "
                      "entrance=%d switches=0x%016llX collect=0x%016llX "
-                     "scene_serial=%u anim=%u frame=%.2f speed=%.2f\n",
+                     "scene_serial=%u anim=%u frame=%.2f speed=%.2f "
+                     "joints=%u limbs=%u mode=%u update=%u\n",
                      netplaySession.Connected() ? 1 : 0,
                      static_cast<unsigned>(netplaySession.LocalPlayer()),
                      local.Position[0], local.Position[1], local.Position[2],
                      remote.Position[0], remote.Position[1], remote.Position[2],
                      remote.Yaw, remote.Sequence, remote.SceneId,
+                     static_cast<unsigned>(local.SceneId),
                      static_cast<unsigned>(local.RoomId), remote.RoomId,
                      remote.DayTime, remote.Health, remote.Wallet,
                      remote.EntranceId,
                      static_cast<unsigned long long>(remote.SwitchFlags),
                      static_cast<unsigned long long>(remote.CollectibleFlags),
                      remote.SceneSerial, remote.Animation,
-                     remote.AnimationFrame, remote.AnimationSpeed);
+                     remote.AnimationFrame, remote.AnimationSpeed,
+                     static_cast<unsigned>(remote.JointMatricesValid),
+                     static_cast<unsigned>(remote.JointMatrixLimbCount),
+                     static_cast<unsigned>(remote.AnimationFlags & 0xFFU),
+                     static_cast<unsigned>((remote.AnimationFlags >> 8U) & 0xFFU));
         if (netplayProbe.is_open()) {
           netplayProbe << "{\"schema\":\"triaevum.netplay.probe.v1\","
                           "\"host_frame\":" << frameCount
@@ -775,6 +805,14 @@ bool NativeA32WindowSession::RunFrame() {
                        << ",\"animation\":" << remote.Animation
                        << ",\"animation_frame\":" << remote.AnimationFrame
                        << ",\"animation_speed\":" << remote.AnimationSpeed
+                       << ",\"joint_matrices_valid\":"
+                       << static_cast<unsigned>(remote.JointMatricesValid)
+                       << ",\"joint_matrix_limbs\":"
+                       << static_cast<unsigned>(remote.JointMatrixLimbCount)
+                       << ",\"animation_mode\":"
+                       << static_cast<unsigned>(remote.AnimationFlags & 0xFFU)
+                       << ",\"animation_update_mode\":"
+                       << static_cast<unsigned>((remote.AnimationFlags >> 8U) & 0xFFU)
                        << "}\n";
           netplayProbe.flush();
         }

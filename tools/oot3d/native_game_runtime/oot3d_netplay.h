@@ -20,6 +20,13 @@ struct NetplayPose {
   std::uint32_t AnimationFlags = 0;
   std::array<std::uint8_t, 0x84> AnimationState{};
   std::uint8_t AnimationStateValid = 0;
+  // The host's final, already blended joint matrices. 0x34 bytes per limb,
+  // same layout the guest's SkelAnime_Draw consumes. Sending them makes the
+  // remote pose independent of the remote actor's animation update mode.
+  static constexpr std::size_t kMaxJointMatrixBytes = 0x34U * 25U;
+  std::array<std::uint8_t, kMaxJointMatrixBytes> JointMatrices{};
+  std::uint8_t JointMatrixLimbCount = 0;
+  std::uint8_t JointMatricesValid = 0;
   std::uint16_t SceneId = 0;
   std::uint16_t RoomId = 0;
   std::uint16_t DayTime = 0;
@@ -98,9 +105,18 @@ public:
   [[nodiscard]] bool LatestRemotePose(NetplayPose* pose) const noexcept;
 
 private:
-  enum class PacketType : std::uint8_t { Hello = 1, HelloAck = 2, State = 3, Bye = 4, SceneRequest = 5 };
+  enum class PacketType : std::uint8_t {
+    Hello = 1,
+    HelloAck = 2,
+    State = 3,
+    Bye = 4,
+    SceneRequest = 5,
+    JointTail = 6,
+  };
 
   void SendPacket(PacketType type, const NetplayPose& pose);
+  void SendJointTail(const NetplayPose& pose);
+  void ApplyPendingJointTail();
   void ConsumePacket(const std::uint8_t* bytes, std::size_t size);
 
   NetplayOptions mOptions;
@@ -118,6 +134,11 @@ private:
   bool mHasRemote = false;
   NetplayPose mRemoteSceneRequest;
   bool mHasRemoteSceneRequest = false;
+  std::array<std::uint8_t, NetplayPose::kMaxJointMatrixBytes> mPendingJointTail{};
+  std::uint32_t mPendingJointTailSequence = 0;
+  std::uint8_t mPendingJointTailFirst = 0;
+  std::uint8_t mPendingJointTailCount = 0;
+  bool mHasPendingJointTail = false;
 };
 
 } // namespace Oot3dNativeGame

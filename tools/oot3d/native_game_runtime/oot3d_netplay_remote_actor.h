@@ -31,6 +31,8 @@ private:
   bool CallActorSpawn(NativeA32Process& process, std::uint32_t play,
                       float x, float y, float z, std::int16_t yaw,
                       std::uint32_t* actor);
+  bool MoveToPropCategory(NativeA32Process& process, std::uint32_t play,
+                          std::uint32_t actor) const;
   bool ActorInCurrentLists(NativeA32Process& process, std::uint32_t play,
                            std::uint32_t actor) const;
   bool ActorUsable(NativeA32Process& process, std::uint32_t actor) const;

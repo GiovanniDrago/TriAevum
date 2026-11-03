@@ -23,6 +23,8 @@ constexpr std::uint32_t kActorListOffset = 0x0CU;
 constexpr std::uint32_t kActorListCount = 12U;
 constexpr std::uint32_t kActorNext = 0x130U;
 constexpr std::uint32_t kActorId = 0x00U;         // s16
+constexpr std::uint32_t kActorCategory = 0x02U;   // u8
+constexpr std::uint32_t kActorRoom = 0x03U;       // s8
 constexpr std::uint32_t kActorObjectSlot = 0x1EU;  // u8
 constexpr std::uint32_t kActorHomePos = 0x08U;
 constexpr std::uint32_t kActorHomeRot = 0x14U;
@@ -46,6 +48,8 @@ constexpr std::uint32_t kActorKill = 0x00374428U;
 constexpr std::uint32_t kActorNoop = 0x00161640U;
 constexpr std::uint32_t kDirectCallReturn = 0x60000000U;
 constexpr std::uint16_t kActorPlayer = 0x0000U;
+constexpr std::uint8_t kActorCategoryProp = 5U;
+constexpr std::uint32_t kPlayCurrentRoom = 0x4C30U;  // u8
 
 bool TraceEnabled() {
   static const bool enabled =
@@ -147,6 +151,17 @@ void NetplayRemoteActor::BeforeGuest(NativeA32Process& process) {
       mActor = mPending;
       mPending = 0;
       mPendingFrames = 0;
+      // A second actor in ACTORCAT_PLAYER competes with the real Player for
+      // the title's global "the player" references (camera, attention and
+      // distance culling). Move the render-only puppet to the prop list and
+      // keep it in the local room so NPC visibility is not derived from it.
+      if (!MoveToPropCategory(process, mPlay, mActor)) {
+        if (TraceEnabled()) {
+          std::fprintf(stderr,
+                       "TRIAEVUM_NETPLAY_REMOTE_ACTOR reparent_failed=0x%08X\n",
+                       mActor);
+        }
+      }
       ApplyPose(process, mActor, pose);
       if (TraceEnabled()) {
         std::fprintf(stderr,
@@ -277,6 +292,66 @@ bool NetplayRemoteActor::CallActorSpawn(NativeA32Process& process,
     return false;
   }
   if (actor != nullptr) *actor = state.r[0];
+  return true;
+}
+
+bool NetplayRemoteActor::MoveToPropCategory(NativeA32Process& process,
+                                            std::uint32_t play,
+                                            std::uint32_t actor) const {
+  if (play == 0U || actor == 0U) return false;
+  auto& memory = process.Memory();
+  std::uint8_t category = 0U;
+  if (!memory.Read8(actor + kActorCategory, &category)) return false;
+  if (category == kActorCategoryProp) return true;
+  if (category >= kActorListCount) return false;
+  const std::uint32_t oldList = play + kActorContext + kActorListOffset +
+                                static_cast<std::uint32_t>(category) * 8U;
+  std::uint32_t oldCount = 0U;
+  std::uint32_t node = 0U;
+  if (!memory.Read32(oldList, &oldCount) ||
+      !memory.Read32(oldList + 4U, &node)) {
+    return false;
+  }
+  std::uint32_t previous = 0U;
+  std::uint32_t next = 0U;
+  bool found = false;
+  for (std::uint32_t index = 0U; node != 0U && index < 512U; ++index) {
+    if (node == actor) {
+      found = true;
+      break;
+    }
+    previous = node;
+    if (!memory.Read32(node + kActorNext, &next)) return false;
+    node = next;
+  }
+  if (!found || !memory.Read32(actor + kActorNext, &next)) return false;
+  if (previous != 0U) {
+    if (!memory.Write32(previous + kActorNext, next)) return false;
+  } else if (!memory.Write32(oldList + 4U, next)) {
+    return false;
+  }
+  if (oldCount != 0U &&
+      !memory.Write32(oldList, oldCount - 1U)) {
+    return false;
+  }
+  const std::uint32_t newList = play + kActorContext + kActorListOffset +
+                                static_cast<std::uint32_t>(kActorCategoryProp) * 8U;
+  std::uint32_t newCount = 0U;
+  std::uint32_t newHead = 0U;
+  if (!memory.Read32(newList, &newCount) ||
+      !memory.Read32(newList + 4U, &newHead)) {
+    return false;
+  }
+  if (!memory.Write32(actor + kActorNext, newHead) ||
+      !memory.Write32(newList + 4U, actor) ||
+      !memory.Write32(newList, newCount + 1U) ||
+      !memory.Write8(actor + kActorCategory, kActorCategoryProp)) {
+    return false;
+  }
+  std::uint8_t room = 0U;
+  if (memory.Read8(play + kPlayCurrentRoom, &room)) {
+    memory.Write8(actor + kActorRoom, room);
+  }
   return true;
 }
 
@@ -437,7 +512,39 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
       (void)memory.WriteBytes(actor + kPlayerSkelAnime + kSkelMorphMatrices,
                               std::span<const std::uint8_t>(remoteBuffers.data() + 8, 4));
     }
-    if (mAnimationInitialized) {
+    bool poseFromMatrices = false;
+    if (pose.JointMatricesValid != 0U && pose.JointMatrixLimbCount > 0U) {
+      std::uint8_t remoteLimbs = 0U;
+      std::uint32_t remoteMatrices = 0U;
+      if (memory.Read8(actor + kPlayerSkelAnime + 0x74U, &remoteLimbs) &&
+          memory.Read32(actor + kPlayerSkelAnime + 0x78U, &remoteMatrices) &&
+          remoteLimbs >= pose.JointMatrixLimbCount && remoteMatrices != 0U) {
+        const std::size_t matrixBytes =
+            static_cast<std::size_t>(pose.JointMatrixLimbCount) * 0x34U;
+        if (memory.WriteBytes(
+                remoteMatrices,
+                std::span<const std::uint8_t>(pose.JointMatrices.data(),
+                                              matrixBytes))) {
+          // The peer's matrices are already the final, blended pose. Stop the
+          // remote SkelAnime from sampling (and overwriting) them; keep only
+          // the streamed fields for diagnostics and fallback.
+          memory.Write8(actor + kPlayerSkelAnime + 0x71U, 0U);
+          memory.Write32(actor + kPlayerSkelAnime + 0x34U, 0U);
+          memory.Write32(actor + kPlayerSkelAnime + 0x38U, 0U);
+          mAnimationInitialized = true;
+          poseFromMatrices = true;
+        }
+      }
+    }
+    if (mAnimationInitialized && !poseFromMatrices) {
+      // Some Player actions (notably the free-run/ladder poses) leave the
+      // native UpdateMode at 0 or feed CurrentFrame from outside SkelAnime.
+      // Sampling the streamed frame with a zero play speed guarantees the
+      // remote joint buffers are recomputed for the peer's exact frame.
+      memory.Write8(actor + kPlayerSkelAnime + 0x71U, 4U);
+      memory.Write32(actor + kPlayerSkelAnime + 0x40U, 0U);
+      memory.Write32(actor + kPlayerSkelAnime + 0x34U, 0U);
+      memory.Write32(actor + kPlayerSkelAnime + 0x38U, 0U);
       auto state = process.PrimaryThreadState();
       state.r[0] = actor + kPlayerSkelAnime;
       state.r[1] = mPlay;
@@ -468,12 +575,33 @@ void NetplayRemoteActor::ApplyPose(NativeA32Process& process,
         memory.Read32(localPlayer + kPlayerSkelAnime + kSkelModelHandle,
                       &localModel);
         memory.Read32(actor + kPlayerSkelAnime + kSkelModelHandle, &remoteModel);
+        std::uint8_t localUpdate = 0U;
+        std::uint8_t remoteUpdate = 0U;
+        std::uint8_t localLimbs = 0U;
+        std::uint8_t remoteLimbs = 0U;
+        std::uint32_t localJoints = 0U;
+        std::uint32_t remoteJoints = 0U;
+        memory.Read8(localPlayer + kPlayerSkelAnime + 0x71U, &localUpdate);
+        memory.Read8(actor + kPlayerSkelAnime + 0x71U, &remoteUpdate);
+        memory.Read8(localPlayer + kPlayerSkelAnime + 0x74U, &localLimbs);
+        memory.Read8(actor + kPlayerSkelAnime + 0x74U, &remoteLimbs);
+        memory.Read32(localPlayer + kPlayerSkelAnime + 0x78U, &localJoints);
+        memory.Read32(actor + kPlayerSkelAnime + 0x78U, &remoteJoints);
         std::fprintf(stderr,
                      "TRIAEVUM_NETPLAY_REMOTE_ANIM local_index=%d remote_index=%d "
                      "local_frame=%.3f remote_frame=%.3f local_speed=%.3f "
-                     "local_model=0x%08X remote_model=0x%08X\n",
+                     "local_update=%u remote_update=%u local_limbs=%u "
+                     "remote_limbs=%u local_joints=0x%08X remote_joints=0x%08X "
+                     "local_model=0x%08X remote_model=0x%08X state_valid=%u "
+                     "joints_valid=%u\n",
                      localIndex, remoteIndex, localFrame, remoteFrame, localSpeed,
-                     localModel, remoteModel);
+                     static_cast<unsigned>(localUpdate),
+                     static_cast<unsigned>(remoteUpdate),
+                     static_cast<unsigned>(localLimbs),
+                     static_cast<unsigned>(remoteLimbs), localJoints, remoteJoints,
+                     localModel, remoteModel,
+                     static_cast<unsigned>(pose.AnimationStateValid),
+                     static_cast<unsigned>(pose.JointMatricesValid));
     }
   }
 }

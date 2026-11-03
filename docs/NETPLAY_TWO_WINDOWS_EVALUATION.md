@@ -1,6 +1,6 @@
 # Two-Window Netplay Evaluation
 
-**Status**: M0 launcher, M1 loopback pose transport, M2 remote-player proxy, M2.5 guest-owned remote Link and M3.1 scene/flag synchronization are usable. Scene transitions now complete in a two-instance run. Door/chest actor animation, enemies, items and cutscenes remain pending.
+**Status**: M0 launcher, M1 loopback pose transport, M2 remote-player proxy, M2.5 guest-owned remote Link and M3.1 scene/flag synchronization are usable. The remote Link now receives the host's final blended joint matrices, so the run and ladder poses do not depend on the remote actor's animation update mode. Scene transitions now follow host authority. Door/chest actor animation, enemies, items and cutscenes remain pending.
 
 ## Goal
 
@@ -363,12 +363,20 @@ the guest-owned actor in `oot3d_netplay_remote_actor.cpp`:
 - its update callback is replaced with the title's no-op immediately; the
   draw callback and object slot are inherited from the local Player;
 - the host runtime writes world position, home position and yaw;
+- the remote actor is moved from `ACTORCAT_PLAYER` to `ACTORCAT_PROP` after
+  spawn and kept in the local room, so a render-only puppet cannot compete for
+  the title's global "the player" references, camera or distance culling;
 - the pose packet carries the full non-owning SkelAnime state alongside the
   animation index/frame/speed/range and morph/mode fields; remote
   position/yaw are interpolated between snapshots;
-- the remote keeps its own model/joint buffers and applies those streamed
-  fields, then runs the native `SkelAnime_Update`; if an older peer sends no
-  range, the local Player's SkelAnime is mirrored as a compatibility fallback;
+- the host also reads its final, already blended 25-limb joint matrices. They
+  travel as the first 20 limbs in the State datagram plus a small `JointTail`
+  datagram, keeping each UDP payload under the 1500-byte MTU. The remote copies
+  them into its own joint buffer, zeros morph weight and sets UpdateMode to 0,
+  so `Player_Draw` renders the peer's exact run/ladder pose;
+- if the matrices are unavailable or the tail was lost, the remote falls back
+  to sampling the streamed frame with UpdateMode 4 and play speed 0; older
+  peers without a frame range still get the local Player's SkelAnime;
 - an invalid/timed-out actor is killed and respawned with a cooldown.
 
 A synthetic loopback peer produced two visible Links in Link's house, with the
@@ -395,9 +403,11 @@ never writes the host save.
 Initial load does not warp either player merely because two independently
 loaded saves start in different scenes. A client-originated scene change sends
 an explicit SceneRequest to the host; a host-originated change is observed as a
-remote scene-id change. The follower requests the matching entrance, adopts the
-peer scene epoch and suppresses a serial echo. The first peer scene is
-baselined so startup/title scenes do not trigger a warp. Health,
+remote scene-id change. **Host authority is strict: only the client follows a
+scene-id change in the peer state; the host follows only an explicit
+SceneRequest.** The follower requests the matching entrance, adopts the peer
+scene epoch and suppresses a serial echo. The first peer scene is baselined so
+startup/title scenes do not trigger a warp. Health,
 wallet and clock are only copied after a synchronized scene change, preventing
 an initial join from overwriting the host's rupees. If a followed scene
 spawns the local Player below the world while the peer is grounded in the same
@@ -422,10 +432,11 @@ bits are carried.
 
 ### Verification
 
-- `oot3d_netplay_tests`: protocol loopback, pose/world round-trip,
-  same-scene application policy, center/offscreen/behind-camera projection.
-- LLVM coverage for `oot3d_netplay.cpp`: 92.60% lines, 94.74% functions,
-  89.50% regions.
+- `oot3d_netplay_tests`: protocol loopback, pose/world round-trip, the
+  25-limb matrix tail, same-scene application policy,
+  center/offscreen/behind-camera projection.
+- LLVM coverage for `oot3d_netplay.cpp`: 86.00% lines, 95.45% functions,
+  83.39% regions (the new datagram split adds defensive branches).
 - `oot3d_native_a32_input_tests`: controller path/GUID/serial round-trip and
   legacy config compatibility.
 - `three_ds_sdl_controller_tests`: SDL selection and device behavior.
@@ -433,11 +444,11 @@ bits are carried.
   shader preparation remains the main launcher timing issue, handled by the
   readiness wait and warm-cache source.
 - Visual check: the guest-owned remote actor produced a second upright,
-  animated Link (`/tmp/opencode/netplay-anim-update/shot_001000.png`) with no
-  cloned-draw artifact. Diagnostic runs show animation frames advancing; the
-  streamed-animation path is exercised by
-  `/tmp/opencode/netplay-anim-stream/run.log`. Older host-replay overlay
-  captures remain in `/tmp/opencode/netplay-zero2/` as the rejected approach.
+  animated Link with no cloned-draw artifact. A two-instance diagnostic now
+  reports `joints=1 limbs=25`, `remote_update=0` and `joints_valid=1` on the
+  receiving side, confirming that the final pose matrices are applied rather
+  than a remote animation update. The loopback test exercises the same
+  State + JointTail split.
 - Synthetic client world check: `/tmp/opencode/netplay-world-client4/run.log`
   shows `local_room=0`, `switches=0x...5`, `collectibles=0x...3`, a clean exit
   and no process fault. Host collectible queries are in

@@ -20,12 +20,31 @@ constexpr std::uint16_t kVersion = 1U;
 constexpr double kSendInterval = 1.0 / 30.0;
 constexpr double kTimeoutSeconds = 3.0;
 
-struct WirePose {
+struct WireHeader {
   std::uint32_t Magic = kMagic;
   std::uint16_t Version = kVersion;
   std::uint8_t Type = 0;
   std::uint8_t Player = 0;
   std::uint32_t Sequence = 0;
+};
+static_assert(sizeof(WireHeader) == 12U);
+
+constexpr std::size_t kWireJointMatrixLimbs = 20U;
+constexpr std::size_t kWireJointMatrixBytes = kWireJointMatrixLimbs * 0x34U;
+
+struct WireJointTail {
+  WireHeader Header;
+  std::uint8_t FirstLimb = 0;
+  std::uint8_t LimbCount = 0;
+  std::uint16_t Reserved = 0;
+  std::array<std::uint8_t, (NetplayPose::kMaxJointMatrixBytes / 0x34U -
+                            kWireJointMatrixLimbs) * 0x34U>
+      Matrices{};
+};
+static_assert(sizeof(WireJointTail) == 16U + 5U * 0x34U);
+
+struct WirePose {
+  WireHeader Header;
   float X = 0.0F;
   float Y = 0.0F;
   float Z = 0.0F;
@@ -40,6 +59,9 @@ struct WirePose {
   std::uint32_t AnimationFlags = 0;
   std::array<std::uint8_t, 0x84> AnimationState{};
   std::uint8_t AnimationStateValid = 0;
+  std::array<std::uint8_t, kWireJointMatrixBytes> JointMatrices{};
+  std::uint8_t JointMatrixLimbCount = 0;
+  std::uint8_t JointMatricesValid = 0;
   std::uint16_t SceneId = 0;
   std::uint16_t RoomId = 0;
   std::uint16_t DayTime = 0;
@@ -52,10 +74,15 @@ struct WirePose {
   std::uint32_t SceneSerial = 0;
 };
 
-static_assert(sizeof(WirePose) == 240U);
+static_assert(sizeof(WirePose) == 1280U);
 
 void SetError(std::string* error, std::string message) {
   if (error != nullptr) *error = std::move(message);
+}
+
+bool TraceEnabled() {
+  static const bool enabled = std::getenv("TRIAEVUM_NETPLAY_TRACE") != nullptr;
+  return enabled;
 }
 
 } // namespace
@@ -123,6 +150,7 @@ bool NetplaySession::Start(const NetplayOptions& options, std::string* error) {
   mSequence = 0;
   mHasRemote = false;
   mRemote = {};
+  mHasPendingJointTail = false;
   return true;
 }
 
@@ -143,6 +171,7 @@ void NetplaySession::Stop() {
   mHasRemote = false;
   mRemoteSceneRequest = {};
   mHasRemoteSceneRequest = false;
+  mHasPendingJointTail = false;
 }
 
 bool NetplaySession::Connected() const noexcept {
@@ -162,9 +191,9 @@ bool NetplaySession::LatestRemotePose(NetplayPose* pose) const noexcept {
 void NetplaySession::SendPacket(PacketType type, const NetplayPose& pose) {
   if (mSocket < 0 || !mPeerKnown) return;
   WirePose packet;
-  packet.Type = static_cast<std::uint8_t>(type);
-  packet.Player = mOptions.Player;
-  packet.Sequence = mSequence;
+  packet.Header.Type = static_cast<std::uint8_t>(type);
+  packet.Header.Player = mOptions.Player;
+  packet.Header.Sequence = mSequence;
   packet.X = pose.Position[0];
   packet.Y = pose.Position[1];
   packet.Z = pose.Position[2];
@@ -179,6 +208,12 @@ void NetplaySession::SendPacket(PacketType type, const NetplayPose& pose) {
   packet.AnimationFlags = pose.AnimationFlags;
   packet.AnimationState = pose.AnimationState;
   packet.AnimationStateValid = pose.AnimationStateValid;
+  const std::size_t wireLimbs = std::min<std::size_t>(
+      pose.JointMatrixLimbCount, kWireJointMatrixLimbs);
+  std::copy_n(pose.JointMatrices.begin(), wireLimbs * 0x34U,
+              packet.JointMatrices.begin());
+  packet.JointMatrixLimbCount = static_cast<std::uint8_t>(wireLimbs);
+  packet.JointMatricesValid = pose.JointMatricesValid;
   packet.SceneId = pose.SceneId;
   packet.RoomId = pose.RoomId;
   packet.DayTime = pose.DayTime;
@@ -196,20 +231,112 @@ void NetplaySession::SendPacket(PacketType type, const NetplayPose& pose) {
                                (static_cast<std::uint32_t>(mPeerAddress[1]) << 16U) |
                                (static_cast<std::uint32_t>(mPeerAddress[2]) << 8U) |
                                static_cast<std::uint32_t>(mPeerAddress[3]));
-  sendto(mSocket, &packet, sizeof(packet), 0,
-         reinterpret_cast<const sockaddr*>(&peer), sizeof(peer));
+  const ssize_t sent = sendto(mSocket, &packet, sizeof(packet), 0,
+                              reinterpret_cast<const sockaddr*>(&peer),
+                              sizeof(peer));
+  if (sent < 0 && TraceEnabled()) {
+    std::fprintf(stderr,
+                 "TRIAEVUM_NETPLAY_TX_FAIL type=%u size=%zu errno=%d\n",
+                 static_cast<unsigned>(type), sizeof(packet), errno);
+  }
+  if (type == PacketType::State && pose.JointMatricesValid != 0U &&
+      pose.JointMatrixLimbCount > kWireJointMatrixLimbs) {
+    SendJointTail(pose);
+  }
+}
+
+void NetplaySession::SendJointTail(const NetplayPose& pose) {
+  if (mSocket < 0 || !mPeerKnown || pose.JointMatricesValid == 0U ||
+      pose.JointMatrixLimbCount <= kWireJointMatrixLimbs) {
+    return;
+  }
+  const std::size_t first = kWireJointMatrixLimbs;
+  const std::size_t count = std::min<std::size_t>(
+      pose.JointMatrixLimbCount - first,
+      WireJointTail{}.Matrices.size() / 0x34U);
+  if (count == 0U) return;
+  WireJointTail packet;
+  packet.Header.Type = static_cast<std::uint8_t>(PacketType::JointTail);
+  packet.Header.Player = mOptions.Player;
+  packet.Header.Sequence = mSequence;
+  packet.FirstLimb = static_cast<std::uint8_t>(first);
+  packet.LimbCount = static_cast<std::uint8_t>(count);
+  std::copy_n(pose.JointMatrices.begin() + first * 0x34U, count * 0x34U,
+              packet.Matrices.begin());
+  sockaddr_in peer{};
+  peer.sin_family = AF_INET;
+  peer.sin_port = htons(mPeerPort);
+  peer.sin_addr.s_addr = htonl((static_cast<std::uint32_t>(mPeerAddress[0]) << 24U) |
+                               (static_cast<std::uint32_t>(mPeerAddress[1]) << 16U) |
+                               (static_cast<std::uint32_t>(mPeerAddress[2]) << 8U) |
+                               static_cast<std::uint32_t>(mPeerAddress[3]));
+  const ssize_t sent = sendto(mSocket, &packet, sizeof(packet), 0,
+                              reinterpret_cast<const sockaddr*>(&peer),
+                              sizeof(peer));
+  if (sent < 0 && TraceEnabled()) {
+    std::fprintf(stderr,
+                 "TRIAEVUM_NETPLAY_TX_FAIL type=6 size=%zu errno=%d\n",
+                 sizeof(packet), errno);
+  }
+}
+
+void NetplaySession::ApplyPendingJointTail() {
+  if (!mHasPendingJointTail || !mHasRemote ||
+      mRemote.Sequence != mPendingJointTailSequence) {
+    return;
+  }
+  const std::size_t first = mPendingJointTailFirst;
+  const std::size_t count = mPendingJointTailCount;
+  if (first + count > NetplayPose::kMaxJointMatrixBytes / 0x34U) {
+    mHasPendingJointTail = false;
+    return;
+  }
+  std::copy_n(mPendingJointTail.begin() + first * 0x34U, count * 0x34U,
+              mRemote.JointMatrices.begin() + first * 0x34U);
+  mRemote.JointMatrixLimbCount = static_cast<std::uint8_t>(first + count);
+  mRemote.JointMatricesValid = 1U;
+  mHasPendingJointTail = false;
 }
 
 void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) {
-  if (bytes == nullptr || size < sizeof(WirePose)) return;
-  WirePose packet{};
-  std::memcpy(&packet, bytes, sizeof(packet));
-  if (packet.Magic != kMagic || packet.Version != kVersion ||
-      packet.Player == 0U || packet.Player > 2U ||
-      packet.Player == mOptions.Player) {
+  if (bytes == nullptr || size < sizeof(WireHeader)) return;
+  WireHeader header{};
+  std::memcpy(&header, bytes, sizeof(header));
+  if (header.Magic != kMagic || header.Version != kVersion ||
+      header.Player == 0U || header.Player > 2U ||
+      header.Player == mOptions.Player) {
     return;
   }
-  const auto type = static_cast<PacketType>(packet.Type);
+  const auto type = static_cast<PacketType>(header.Type);
+  if (type == PacketType::JointTail) {
+    if (size < sizeof(WireJointTail)) return;
+    WireJointTail tail{};
+    std::memcpy(&tail, bytes, sizeof(tail));
+    const std::size_t first = tail.FirstLimb;
+    const std::size_t count = tail.LimbCount;
+    if (first + count > NetplayPose::kMaxJointMatrixBytes / 0x34U ||
+        count == 0U) {
+      return;
+    }
+    if (mHasRemote && mRemote.Sequence == tail.Header.Sequence) {
+      std::copy_n(tail.Matrices.begin(), count * 0x34U,
+                  mRemote.JointMatrices.begin() + first * 0x34U);
+      mRemote.JointMatrixLimbCount =
+          static_cast<std::uint8_t>(first + count);
+      mRemote.JointMatricesValid = 1U;
+    } else {
+      std::copy_n(tail.Matrices.begin(), count * 0x34U,
+                  mPendingJointTail.begin() + first * 0x34U);
+      mPendingJointTailSequence = tail.Header.Sequence;
+      mPendingJointTailFirst = tail.FirstLimb;
+      mPendingJointTailCount = tail.LimbCount;
+      mHasPendingJointTail = true;
+    }
+    return;
+  }
+  if (size < sizeof(WirePose)) return;
+  WirePose packet{};
+  std::memcpy(&packet, bytes, sizeof(packet));
   if (type == PacketType::Hello) {
     // Poll records the sender address for the host before calling this.
     mAcknowledged = true;
@@ -218,7 +345,7 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
   } else if (type == PacketType::SceneRequest) {
     if (mOptions.Host) {
       NetplayPose pose;
-      pose.Sequence = packet.Sequence;
+      pose.Sequence = packet.Header.Sequence;
       pose.Position = {packet.X, packet.Y, packet.Z};
       pose.Yaw = packet.Yaw;
       pose.SceneId = packet.SceneId;
@@ -230,7 +357,7 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
     }
   } else if (type == PacketType::State) {
     NetplayPose pose;
-    pose.Sequence = packet.Sequence;
+    pose.Sequence = packet.Header.Sequence;
     pose.Position = {packet.X, packet.Y, packet.Z};
     pose.Yaw = packet.Yaw;
     pose.Animation = packet.Animation;
@@ -243,6 +370,11 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
     pose.AnimationFlags = packet.AnimationFlags;
     pose.AnimationState = packet.AnimationState;
     pose.AnimationStateValid = packet.AnimationStateValid;
+    std::copy_n(packet.JointMatrices.begin(),
+                static_cast<std::size_t>(packet.JointMatrixLimbCount) * 0x34U,
+                pose.JointMatrices.begin());
+    pose.JointMatrixLimbCount = packet.JointMatrixLimbCount;
+    pose.JointMatricesValid = packet.JointMatricesValid;
     pose.SceneId = packet.SceneId;
     pose.RoomId = packet.RoomId;
     pose.DayTime = packet.DayTime;
@@ -255,6 +387,7 @@ void NetplaySession::ConsumePacket(const std::uint8_t* bytes, std::size_t size) 
     if (!mHasRemote || pose.Sequence >= mRemote.Sequence) {
       mRemote = pose;
       mHasRemote = true;
+      ApplyPendingJointTail();
     }
     mLastReceiveSeconds = mElapsedSeconds;
     if (!mOptions.Host) mAcknowledged = true;
@@ -281,7 +414,7 @@ void NetplaySession::Poll(double seconds, const NetplayPose& local) {
   mElapsedSeconds += seconds;
   mSendAccumulator += seconds;
 
-  std::array<std::uint8_t, 512> buffer{};
+  std::array<std::uint8_t, 4096> buffer{};
   for (;;) {
     sockaddr_in sender{};
     socklen_t senderSize = sizeof(sender);
@@ -304,11 +437,22 @@ void NetplaySession::Poll(double seconds, const NetplayPose& local) {
     } else if (senderBytes != mPeerAddress || ntohs(sender.sin_port) != mPeerPort) {
       continue;
     }
+    if (TraceEnabled()) {
+      const WireHeader* header =
+          reinterpret_cast<const WireHeader*>(buffer.data());
+      std::fprintf(stderr,
+                   "TRIAEVUM_NETPLAY_RX host=%d size=%zd type=%u player=%u "
+                   "seq=%u\n",
+                   mOptions.Host ? 1 : 0, received,
+                   static_cast<unsigned>(header->Type),
+                   static_cast<unsigned>(header->Player), header->Sequence);
+    }
     ConsumePacket(buffer.data(), static_cast<std::size_t>(received));
     mLastReceiveSeconds = mElapsedSeconds;
     if (mOptions.Host) {
       // Answer a Hello as soon as the peer is known.
-      const WirePose* packet = reinterpret_cast<const WirePose*>(buffer.data());
+      const WireHeader* packet =
+          reinterpret_cast<const WireHeader*>(buffer.data());
       if (packet->Type == static_cast<std::uint8_t>(PacketType::Hello)) {
         NetplayPose empty;
         SendPacket(PacketType::HelloAck, empty);

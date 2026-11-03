@@ -164,7 +164,10 @@ bool NetplayWorldSync::BeforeGuest(NativeA32Process& process, bool host,
     const std::uint16_t changedScene = remote->SceneId;
     mLastRemoteScene = changedScene;
     mLastRemoteSceneSerial = remote->SceneSerial;
-    if (changedScene != scene && SceneTransitionEnabled() &&
+    // Only the client follows a scene-id change observed in the host's
+    // state. The host accepts client transitions solely through the explicit
+    // SceneRequest above, so both sides can never chase each other's scene.
+    if (!host && changedScene != scene && SceneTransitionEnabled() &&
         mSceneFrames >= 120U && mTransitionCooldown == 0U &&
         remote->EntranceId > 0 && remote->EntranceId <= 0xFFFF) {
       mPendingEntrance = remote->EntranceId;
