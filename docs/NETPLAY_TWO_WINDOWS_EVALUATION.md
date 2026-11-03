@@ -371,7 +371,10 @@ the guest-owned actor in `oot3d_netplay_remote_actor.cpp`:
   position/yaw are interpolated between snapshots;
 - the pose also carries the remote visual/action fields `Player_Draw` reads:
   current boots, held-item action, item action, `StateFlags` and
-  `SecondaryStateFlags`; they are written only to the no-update puppet;
+  `SecondaryStateFlags`. Only the boot variant is applied to the no-update
+  puppet today; the held-item/action fields are carried for the equipment pass
+  but stay unwritten because the puppet's object bank may not hold the peer's
+  item and `Player_Draw` can tail-call `Player_DrawGetItem` (fail closed);
 - the host also reads its final, already blended 25-limb joint matrices. They
   travel as the first 20 limbs in the State datagram plus a small `JointTail`
   datagram, keeping each UDP payload under the 1500-byte MTU. The remote copies
