@@ -425,6 +425,10 @@ path during the controlled transition. A teardown interlock clears the remote
 Link draw callback first. `TRIAEVUM_NETPLAY_DISABLE_SCENE_TRANSITION=1` forces
 the old local-only behavior.
 
+A host that stops receiving State drops its discovered peer and admits the
+next Hello; a client that times out clears its ack and re-enters the Hello retry
+loop. This is the M1 rejoin path, not yet a reliable-ordered event channel.
+
 This is not full world replication: existing door/chest actors may not animate
 immediately, enemies/items/cutscenes are still local-only, room changes without
 a valid entrance are not followed, and only the first 64 switch/collectible
@@ -433,8 +437,8 @@ bits are carried.
 ### Verification
 
 - `oot3d_netplay_tests`: protocol loopback, pose/world round-trip, the
-  25-limb matrix tail, same-scene application policy,
-  center/offscreen/behind-camera projection.
+  25-limb matrix tail, same-scene application policy, timeout/rejoin
+  admission, center/offscreen/behind-camera projection.
 - LLVM coverage for `oot3d_netplay.cpp`: 86.00% lines, 95.45% functions,
   83.39% regions (the new datagram split adds defensive branches).
 - `oot3d_native_a32_input_tests`: controller path/GUID/serial round-trip and

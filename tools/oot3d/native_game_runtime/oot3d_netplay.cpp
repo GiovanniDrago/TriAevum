@@ -460,6 +460,17 @@ void NetplaySession::Poll(double seconds, const NetplayPose& local) {
     }
   }
 
+  // A peer that stops sending State must be re-admitted. The host forgets the
+  // discovered address so the next Hello is accepted as a fresh peer; the
+  // client clears its ack and starts the Hello retry loop again.
+  if (mPeerKnown && mLastReceiveSeconds + kTimeoutSeconds < mElapsedSeconds) {
+    mAcknowledged = false;
+    if (mOptions.Host) {
+      mPeerKnown = false;
+      mPeerAddress = {};
+      mPeerPort = 0;
+    }
+  }
   if (!mPeerKnown) {
     // The client knows the configured host; the host waits for Hello.
     if (mOptions.Host) return;
